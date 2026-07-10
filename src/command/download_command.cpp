@@ -1,0 +1,243 @@
+#include "download_command.hpp"
+#include "../service/jdk_download_service.hpp"
+#include "../service/jdk_scan_service.hpp"
+#include "../service/java_env_service.hpp"
+#include "../infrastructure/path_utils.hpp"
+#include "../print/color_print.hpp"
+#include "../utils/utils.hpp"
+#include "../infrastructure/elevation_helper.hpp"
+#include <regex>
+#include <filesystem>
+#include <conio.h>
+
+namespace fs = std::filesystem;
+
+// 辅助：将目录移动到回收站（与 remove 命令复用）
+static bool MoveToTrash(const std::wstring& jdkPath, const std::wstring& version, const std::wstring& exeDir, std::wstring& outTrashPath) {
+    if (!IsDirectory(jdkPath)) return false;
+
+    std::wstring trashRoot = exeDir + L"\\.jmt_trash";
+    CreateDirectoryW(trashRoot.c_str(), nullptr);
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t timeBuf[32];
+    swprintf_s(timeBuf, L"%04d%02d%02d_%02d%02d%02d",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    std::wstring trashDirName = L"jdk-" + version + L"_" + std::wstring(timeBuf);
+    std::wstring trashPath = JoinPath(trashRoot, trashDirName);
+
+    BOOL moved = MoveFileW(jdkPath.c_str(), trashPath.c_str());
+    if (!moved) {
+        try {
+            fs::copy(jdkPath, trashPath, fs::copy_options::recursive);
+            fs::remove_all(jdkPath);
+        } catch (...) {
+            return false;
+        }
+    }
+    WriteFileText(JoinPath(trashPath, L".original_path"), jdkPath);
+    outTrashPath = trashPath;
+    return true;
+}
+
+int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
+    // ----- 提权 -----
+    if (!ctx.isElevated) {
+        std::wstring cmdLine;
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (i > 0) cmdLine += L' ';
+            if (args[i].find(L' ') != std::wstring::npos)
+                cmdLine += L'"' + args[i] + L'"';
+            else
+                cmdLine += args[i];
+        }
+        PrintInfo(L"需要管理员权限，正在请求提权...");
+        if (ElevationHelper::RelaunchElevated(cmdLine)) {
+            return 0;
+        } else {
+            PrintError(L"提权失败，请手动以管理员身份运行");
+            return 3;
+        }
+    }
+
+    // ----- 参数检查 -----
+    if (args.size() < 2) {
+        PrintError(L"请指定版本号，如 download 21");
+        PrintInfo(L"可选参数: --mirror  (使用内置镜像加速下载)");
+        PrintInfo(L"          exe     (强制下载 EXE 安装程序到 .temp，不自动安装)");
+        PrintInfo(L"          java    (使用官方源下载很慢，自动解压安装)");
+        return 1;
+    }
+
+    // 解析参数
+    bool useMirror = false;
+    bool forceExe = false;
+    bool forceOfficial = false;   // ← 新增标志
+    std::wstring versionArg;
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == L"--mirror") {
+            useMirror = true;
+        } else if (args[i] == L"exe") {
+            forceExe = true;
+        } else if (args[i] == L"java") {   // ← 识别 java 参数
+            forceOfficial = true;
+        } else {
+            if (versionArg.empty()) {
+                versionArg = args[i];
+            }
+        }
+    }
+
+    if (versionArg.empty()) {
+        PrintError(L"请指定版本号，如 download 21");
+        return 1;
+    }
+
+    // 提取主版本号
+    std::wstring majorVersion;
+    std::wregex pattern(L"^(\\d+)");
+    std::wsmatch match;
+    if (std::regex_search(versionArg, match, pattern) && match.size() > 1) {
+        majorVersion = match[1].str();
+        if (majorVersion != versionArg) {
+            PrintInfo(L"检测到具体版本号 " + versionArg + L"，将使用主要版本 " + majorVersion);
+        }
+    } else {
+        PrintError(L"无效的版本号格式，请输入数字，如 17");
+        return 1;
+    }
+
+    // ----- 检查是否已存在该版本 -----
+    auto jdks = JdkScanService::scanJdks(false, ctx.cacheFilePath, true);
+    bool exists = false;
+    std::wstring existingPath;
+    for (const auto& [ver, path] : jdks) {
+        if (ver == majorVersion) {
+            exists = true;
+            existingPath = path;
+            break;
+        }
+    }
+
+    if (exists) {
+        PrintWarning(L"JDK " + majorVersion + L" 已安装在: " + existingPath);
+        PrintInfo(L"是否删除旧版本并重新下载安装？(y/n)");
+        int ch = _getwch();
+        if (ch != L'y' && ch != L'Y') {
+            PrintInfo(L"操作已取消");
+            return 0;
+        }
+        PrintInfo(L""); // 换行
+
+        // 将旧目录移动到回收站
+        std::wstring trashPath;
+        if (!MoveToTrash(existingPath, majorVersion, ctx.exeDirectory, trashPath)) {
+            PrintError(L"移动旧版本到回收站失败，请手动删除 " + existingPath);
+            return 4;
+        }
+        PrintInfo(L"旧版本已移至回收站: " + trashPath);
+
+        // 从缓存中移除该版本
+        auto newJdks = jdks;
+        newJdks.erase(std::remove_if(newJdks.begin(), newJdks.end(),
+                                     [&](const auto& p) { return p.first == majorVersion; }), newJdks.end());
+        JdkScanService::writeCache(newJdks, ctx.cacheFilePath);
+
+        // ---- 更新 PATH：如果当前版本被删除，则切换到最大版本 ----
+        std::wstring currentVer = JavaEnvService::getCurrentVersion();
+        if (currentVer == majorVersion) {
+            PrintInfo(L"当前 PATH 正使用该版本，正在切换到最大版本...");
+            if (newJdks.empty()) {
+                // 无其他版本，清除 PATH 中的 JDK 路径
+                if (!JavaEnvService::clearCurrentJdk(EnvTarget::Auto)) {
+                    PrintError(L"清除当前 JDK PATH 失败");
+                    return 3;
+                }
+                PrintInfo(L"已清除当前 JDK PATH（无其他版本）");
+            } else {
+                auto maxIt = std::max_element(newJdks.begin(), newJdks.end(),
+                                              [](const auto& a, const auto& b) {
+                                                  return std::stoi(a.first) < std::stoi(b.first);
+                                              });
+                if (!JavaEnvService::setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
+                    PrintError(L"切换到最大版本失败");
+                    return 3;
+                }
+                PrintInfo(L"已切换至最大版本: " + maxIt->first);
+            }
+        } else {
+            // 当前 PATH 不是该版本，但为了安全，从 PATH 中删除该版本的 bin 路径（如果存在）
+            std::wstring binPath = JoinPath(existingPath, L"bin");
+            std::wstring path = RegistryOperator::getPath(EnvTarget::Auto);
+            auto entries = PathUtils::splitPath(path);
+            entries = PathUtils::removeEntries(entries, binPath);
+            std::wstring newPath;
+            for (size_t i = 0; i < entries.size(); ++i) {
+                if (i > 0) newPath += L';';
+                newPath += entries[i];
+            }
+            RegistryOperator::setPath(newPath, EnvTarget::Auto);
+        }
+
+        // 删除任何残留的 JAVA_HOME<version> 变量（向后兼容）
+        RegistryOperator::deleteEnvString(L"JAVA_HOME" + majorVersion, EnvTarget::Auto);
+        PrintInfo(L"旧版本环境变量已清理");
+    }
+
+    // ----- 执行下载 -----
+    std::wstring installPath;
+
+    if (forceOfficial) {
+        // 强制从官方下载（绕过镜像和 EXE）
+        installPath = JdkDownloadService::downloadFromOfficial(majorVersion);
+    } else if (useMirror) {
+        installPath = JdkDownloadService::downloadFromMirror(majorVersion);
+    } else {
+        // 默认：尝试镜像 ZIP，失败则回退官方 ZIP
+        installPath = JdkDownloadService::downloadAndInstall(majorVersion);
+    }
+
+    if (installPath == L"EXE_DOWNLOADED") {
+        PrintInfo(L"JDK 安装程序已下载到 .temp 目录，请手动完成安装");
+        return 0;
+    }
+
+    if (installPath.empty()) {
+        PrintError(L"下载或安装失败");
+        return 4;
+    }
+
+    // ----- 安装成功，更新缓存并设置当前版本 -----
+    // 强制刷新缓存，获取最新列表
+    auto updatedJdks = JdkScanService::scanJdks(true, ctx.cacheFilePath, true);
+    bool foundNew = false;
+    for (const auto& [v, p] : updatedJdks) {
+        if (p == installPath || v == majorVersion) { // 若路径匹配或版本匹配
+            if (!JavaEnvService::setCurrentJdk(p, EnvTarget::Auto)) {
+                PrintError(L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + v + L"'");
+                return 3;
+            }
+            foundNew = true;
+            PrintSuccess(L"JDK " + v + L" 已安装并设为当前版本");
+            break;
+        }
+    }
+    if (!foundNew && !updatedJdks.empty()) {
+        // 若未找到新版本（可能名称不一致），则选择最大版本
+        auto maxIt = std::max_element(updatedJdks.begin(), updatedJdks.end(),
+                                      [](const auto& a, const auto& b) {
+                                          return std::stoi(a.first) < std::stoi(b.first);
+                                      });
+        if (!JavaEnvService::setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
+            PrintError(L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + maxIt->first + L"'");
+            return 3;
+        }
+        PrintSuccess(L"JDK 安装成功，已自动切换至最大版本 " + maxIt->first);
+    } else {
+        // 已设置成功
+    }
+
+    PrintInfo(L"请重启终端使环境变量生效（或新开终端）");
+    return 0;
+}

@@ -1,0 +1,12 @@
+# Clion / Java Manager Tool 
+# java 版本管理工具
+
+# IDEA 工作目录不要
+.idea/
+
+# CMake Build Debug
+# 忽略 cmake-build-* 目录下的所有内容
+cmake-build-*/*
+
+# 但排除（不忽略）其中的 jmt.exe
+!cmake-build-*/jmt.exe
