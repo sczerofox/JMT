@@ -2,6 +2,6 @@
 #include "../print/color_print.hpp"
 
 int VersionCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
-    PrintInfo(L"JMT v1.6 (build 2026.07.6)");
+    PrintInfo(L"JMT v1.7 (build 2026.07.13)");
     return 0;
 }

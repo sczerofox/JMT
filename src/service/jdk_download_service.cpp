@@ -68,7 +68,7 @@ static bool FixNestedJdkDirectory(const std::wstring& targetDir) {
             }
         }
     } catch (const std::exception& e) {
-        PrintDebug(L"FixNestedJdkDirectory: 遍历目录异常 " + std::wstring(e.what(), e.what() + strlen(e.what())));
+        PrintDebug(L"FixNestedJdkDirectory: 遍历目录异常 " + ToWideString(e.what()));
         return false;
     }
 
@@ -96,7 +96,7 @@ static bool FixNestedJdkDirectory(const std::wstring& targetDir) {
         PrintDebug(L"FixNestedJdkDirectory: 移动成功");
         return true;
     } catch (const std::exception& e) {
-        PrintDebug(L"FixNestedJdkDirectory: 移动失败 " + std::wstring(e.what(), e.what() + strlen(e.what())));
+        PrintDebug(L"FixNestedJdkDirectory: 移动失败 " + ToWideString(e.what()));
         return false;
     }
 }
@@ -333,7 +333,6 @@ void JdkDownloadService::loadExternalMappings() {
 void JdkDownloadService::initBuiltinMappings() {
     // ---- ZIP 源 ----
     // 来自您的 jdk_zip_repo.txt
-    zipMap_[L"8"].push_back(L"https://repo.huaweicloud.com/java/jdk/8u202-b08-demos/jdk-8u202-windows-x64-demos.zip");
     zipMap_[L"11"].push_back(L"https://repo.huaweicloud.com/java/jdk/11+28/jdk-11_windows-x64_bin.zip");
     zipMap_[L"11"].push_back(L"https://repo.huaweicloud.com/java/jdk/11.0.1+13/jdk-11.0.1_windows-x64_bin.zip");
     zipMap_[L"11"].push_back(L"https://repo.huaweicloud.com/java/jdk/11.0.2+7/jdk-11.0.2_windows-x64_bin.zip");
@@ -752,18 +751,38 @@ void JdkDownloadService::ensureExternalMappingFiles() {
         }
     }
 
+    // 检测文件是否为 UTF-16 LE 编码（老版本遗留问题），是则删除重建
+    auto checkAndFixEncoding = [](const std::wstring& path) {
+        if (!IsFile(path)) return;
+        HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile == INVALID_HANDLE_VALUE) return;
+        BYTE bom[2] = {0};
+        DWORD read = 0;
+        if (ReadFile(hFile, bom, 2, &read, nullptr) && read == 2) {
+            if (bom[0] == 0xFF && bom[1] == 0xFE) {
+                CloseHandle(hFile);
+                hFile = INVALID_HANDLE_VALUE;
+                DeleteFileW(path.c_str());
+                PrintDebug(L"检测到 UTF-16 LE 编码，已删除并准备重建: " + path);
+                return;
+            }
+        }
+        if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
+    };
+
     // ---------- 处理 ZIP 映射文件 ----------
     std::wstring zipFilePath = JoinPath(repoDir, L"jdk_zip_repo.txt");
+    checkAndFixEncoding(zipFilePath);
     if (!IsFile(zipFilePath)) {
         std::wstring content;
-        content += L"# JDK ZIP 源列表\n";
-        content += L"# 每行一个 URL，以 # 开头为注释\n";
-        content += L"# 版本号将从 URL 中自动提取（主版本号）\n";
-        content += L"# 例如: https://mirrors.huaweicloud.com/openjdk/17/openjdk-17_windows-x64_bin.zip\n";
-        content += L"# 将识别为版本 17\n\n";
+        content += L"# JDK ZIP mirror list\n";
+        content += L"# One URL per line. Lines starting with # are comments.\n";
+        content += L"# Version number is auto-extracted from URL (major version).\n";
+        content += L"# Example: https://mirrors.huaweicloud.com/openjdk/17/openjdk-17_windows-x64_bin.zip\n";
+        content += L"#          -> recognized as version 17\n\n";
 
         for (const auto& [ver, urls] : zipMap_) {
-            // 可添加注释说明版本，但非必须
             for (const auto& url : urls) {
                 content += url + L"\n";
             }
@@ -778,13 +797,14 @@ void JdkDownloadService::ensureExternalMappingFiles() {
 
     // ---------- 处理 EXE 映射文件 ----------
     std::wstring exeFilePath = JoinPath(repoDir, L"jdk_exe_repo.txt");
+    checkAndFixEncoding(exeFilePath);
     if (!IsFile(exeFilePath)) {
         std::wstring content;
-        content += L"# JDK EXE 安装程序源列表\n";
-        content += L"# 每行一个 URL，以 # 开头为注释\n";
-        content += L"# 版本号将从 URL 中自动提取（主版本号）\n";
-        content += L"# 例如: https://repo.huaweicloud.com/java/jdk/8u202-b08/jdk-8u202-windows-x64.exe\n";
-        content += L"# 将识别为版本 8\n\n";
+        content += L"# JDK EXE installer list\n";
+        content += L"# One URL per line. Lines starting with # are comments.\n";
+        content += L"# Version number is auto-extracted from URL (major version).\n";
+        content += L"# Example: https://repo.huaweicloud.com/java/jdk/8u202-b08/jdk-8u202-windows-x64.exe\n";
+        content += L"#          -> recognized as version 8\n\n";
 
         for (const auto& [ver, urls] : exeMap_) {
             for (const auto& url : urls) {

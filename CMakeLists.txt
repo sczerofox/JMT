@@ -20,7 +20,7 @@ set(SOURCES
         src/command/shell_command.cpp
         src/command/help_command.cpp
         src/command/rollback_command.cpp
-        src/command/clean_trash_command.cpp
+        src/command/data_command.cpp
         src/repl/repl_engine.cpp
         src/repl/repl_utils.cpp
         src/service/java_env_service.cpp

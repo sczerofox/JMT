@@ -40,8 +40,7 @@ src/
 │   ├── version_command.cpp
 │   ├── shell_command.cpp         # Open new CMD with JMT interactive
 │   ├── help_command.cpp
-│   ├── rollback_command.cpp
-│   └── clean_trash_command.cpp   # --force flag
+│   └── rollback_command.cpp
 ├── service/                      # Business logic layer
 │   ├── jdk_scan_service.cpp      # Full SSD scan, cache read/write, self-healing
 │   ├── java_env_service.cpp      # Read/write PATH, manage JDK bin entries

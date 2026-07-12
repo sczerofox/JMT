@@ -16,7 +16,7 @@ namespace fs = std::filesystem;
 static bool MoveToTrash(const std::wstring& jdkPath, const std::wstring& version, const std::wstring& exeDir, std::wstring& outTrashPath) {
     if (!IsDirectory(jdkPath)) return false;
 
-    std::wstring trashRoot = exeDir + L"\\.jmt_trash";
+    std::wstring trashRoot = exeDir + L"\\.trash";
     CreateDirectoryW(trashRoot.c_str(), nullptr);
 
     SYSTEMTIME st;

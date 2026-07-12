@@ -101,11 +101,16 @@ std::wstring JavaEnvService::getCurrentVersion() {
     auto entries = PathUtils::splitPath(path);
     for (const auto& e : entries) {
         if (IsJdkBinPath(e)) {
-            // 从路径中提取版本号，如 D:\Program Files\Java\jdk-17\bin -> 17
-            std::wregex pattern(L"jdk[-_]?(\\d+)");
+            // 从路径中提取版本号：
+            //   D:\Program Files\Java\jdk-17\bin       -> 17
+            //   D:\Program Files\Java\jdk1.8.0_202\bin -> 8
+            std::wregex pattern(L"jdk(?:1\\.(\\d+)|[-_]?(\\d+))");
             std::wsmatch match;
             if (std::regex_search(e, match, pattern) && match.size() > 1) {
-                return match[1].str();
+                if (match[1].matched)
+                    return match[1].str();  // jdk1.8.x -> "8"
+                else if (match[2].matched)
+                    return match[2].str();  // jdk-17 / jdk17 -> "17"
             }
         }
     }

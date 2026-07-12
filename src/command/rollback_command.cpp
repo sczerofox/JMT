@@ -48,7 +48,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
     // ----- 1. list 子命令（无需提权）-----
     if (args[1] == L"list") {
-        std::wstring trashRoot = ctx.exeDirectory + L"\\.jmt_trash";
+        std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
         if (!IsDirectory(trashRoot)) {
             PrintInfo(L"回收站为空，没有可回退的版本");
             return 0;
@@ -118,7 +118,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
     // ----- 3. 恢复指定版本 -----
     std::wstring version = args[1];
 
-    std::wstring trashRoot = ctx.exeDirectory + L"\\.jmt_trash";
+    std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
     if (!IsDirectory(trashRoot)) {
         PrintError(L"回收站不存在，没有可回退的版本");
         return 2;

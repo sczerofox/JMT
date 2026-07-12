@@ -13,11 +13,11 @@ bool IsFile(const std::wstring& path);
 std::wstring GetTimestampStr();
 // 将路径中的非法字符（\ : / * ? " < > |）转换为 '_'
 std::wstring EncodePathForFilename(const std::wstring& path);
-// 将编码后的文件名还原为原始路径（反向替换）
+// 将编码后的文件名还原为原始路径（反向替换，有损转换，不建议使用）
+[[deprecated("Use .original_path metadata files instead of encoding/decoding paths")]]
 std::wstring DecodePathFromFilename(const std::wstring& encoded);
-// 解析回收站条目名称，返回 pair<版本号, 原始路径>，若解析失败返回空
-std::pair<std::wstring, std::wstring> ParseTrashEntryName(const std::wstring& dirName);
-// 获取回收站根目录
-std::wstring GetTrashRoot(const std::wstring& exeDir);
 
 [[maybe_unused]] bool WriteFileText(const std::wstring& path, const std::wstring& content);
+
+// 将窄字符串（ANSI 编码）正确转换为宽字符串，避免逐字节扩展导致乱码
+std::wstring ToWideString(const std::string& str);

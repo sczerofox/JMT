@@ -10,3 +10,6 @@ cmake-build-*/*
 
 # 但排除（不忽略）其中的 jmt.exe
 !cmake-build-*/jmt.exe
+
+# 排除 CLAUDE.md
+CLAUDE.md

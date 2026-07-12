@@ -34,7 +34,15 @@ int SearchCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         return 2;
     }
 
-    // 选择最大版本
+    // 检查 PATH 中是否已有 JDK 版本
+    std::wstring currentVer = JavaEnvService::getCurrentVersion();
+    if (!currentVer.empty()) {
+        PrintSuccess(L"扫描完成，共 " + std::to_wstring(jdks.size()) + L" 个版本，当前生效: " + currentVer);
+        PrintWarning(L"如需切换版本，请使用 'jmt use <版本号>'");
+        return 0;
+    }
+
+    // PATH 中没有 JDK，选择最大版本
     auto maxIt = std::max_element(jdks.begin(), jdks.end(),
                                   [](const auto& a, const auto& b) {
                                       return std::stoi(a.first) < std::stoi(b.first);
@@ -48,7 +56,7 @@ int SearchCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         return 3;
     }
 
-    PrintSuccess(L"扫描完成，共 " + std::to_wstring(jdks.size()) + L" 个版本，当前生效: " + maxVer);
+    PrintSuccess(L"扫描完成，共 " + std::to_wstring(jdks.size()) + L" 个版本，已自动设置: " + maxVer);
     PrintWarning(L"请重启终端使环境变量生效！");
     return 0;
 }

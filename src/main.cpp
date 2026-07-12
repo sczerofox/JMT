@@ -10,7 +10,7 @@
 #include "command/shell_command.hpp"
 #include "command/help_command.hpp"
 #include "command/rollback_command.hpp"
-#include "command/clean_trash_command.hpp"
+#include "command/data_command.hpp"
 #include "repl/repl_engine.hpp"
 #include "print/color_print.hpp"
 #include "utils/utils.hpp"
@@ -45,7 +45,7 @@ int wmain(int argc, wchar_t* argv[]) {
     registry.registerCommand(L"shell", std::make_unique<ShellCommand>());
     registry.registerCommand(L"help", std::make_unique<HelpCommand>(registry));
     registry.registerCommand(L"rollback", std::make_unique<RollbackCommand>());
-    registry.registerCommand(L"clean-trash", std::make_unique<CleanTrashCommand>());
+    registry.registerCommand(L"data", std::make_unique<DataCommand>());
 
     // 解析命令
     std::vector<std::wstring> args;
@@ -113,7 +113,7 @@ int wmain(int argc, wchar_t* argv[]) {
         int exitCode = command->execute(args, ctx);
         return exitCode;
     } catch (const std::exception& e) {
-        PrintError(L"执行异常: " + std::wstring(e.what(), e.what() + strlen(e.what())));
+        PrintError(L"执行异常: " + ToWideString(e.what()));
         return 1;
     }
 }

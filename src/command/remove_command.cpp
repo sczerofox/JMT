@@ -7,6 +7,7 @@
 #include "../infrastructure/elevation_helper.hpp"
 #include <algorithm>
 #include <cctype>
+#include <conio.h>
 #include <filesystem>
 #include <regex>
 
@@ -49,6 +50,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         PrintInfo(L"  子命令: env      - 清理 JMT 管理的 JDK PATH 和 JMT 自身 PATH，恢复 Oracle javapath");
         PrintInfo(L"           all     - 完全清理所有 JMT 相关 PATH 条目和缓存");
         PrintInfo(L"           temp    - 删除 .temp 下载缓存目录");
+        PrintInfo(L"           trash   - 永久清空回收站 (.trash)");
         PrintInfo(L"           <版本号> - 删除指定版本的 JDK，自动切换到最大版本（若为当前版本）");
         PrintInfo(L"  示例: remove env, remove all, remove 17, remove --user env");
         return 1;
@@ -58,15 +60,8 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
     // ---------- remove env ----------
     if (subCmd == L"env") {
-        PrintInfo(L"正在清理 JMT 管理的 PATH 条目...");
+        PrintInfo(L"正在从 PATH 中移除 JMT 自身目录...");
 
-        // 1. 清理所有 JDK bin 路径（并恢复 Oracle javapath）
-        if (!JavaEnvService::clearCurrentJdk(target)) {
-            PrintError(L"清理 JDK PATH 失败");
-            return 3;
-        }
-
-        // 2. 删除 JMT 自身目录（如果存在）
         std::wstring path = RegistryOperator::getPath(target);
         auto entries = PathUtils::splitPath(path);
         entries = PathUtils::removeEntries(entries, ctx.exeDirectory);
@@ -77,44 +72,95 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         }
         RegistryOperator::setPath(newPath, target);
 
-        PrintSuccess(L"JMT 环境清理完成，已删除当前 JDK 路径和 JMT 自身路径，已恢复 Oracle javapath");
+        PrintSuccess(L"JMT 自身目录已从 PATH 中移除");
         return 0;
     }
 
     // ---------- remove all ----------
     if (subCmd == L"all") {
+        PrintWarning(L"此操作将清除所有 JMT 配置，包括：");
+        PrintInfo(L"  - 从 PATH 中移除 JMT 自身目录和当前 JDK 路径");
+        PrintInfo(L"  - 恢复 Oracle javapath 环境变量");
+        PrintInfo(L"  - 删除 .trash 回收站");
+        PrintInfo(L"  - 删除 .temp 下载缓存");
+        PrintInfo(L"请输入 'y' 确认，其他任意键取消：");
+        int ch = _getwch();
+        if (ch != L'y' && ch != L'Y') {
+            PrintInfo(L"操作已取消");
+            return 0;
+        }
+        PrintInfo(L""); // 换行
+
         PrintInfo(L"正在完全清理所有 JMT 配置...");
 
         // 1. 清除当前 JDK（删除 PATH 条目，恢复 Oracle javapath）
         if (!JavaEnvService::clearCurrentJdk(target)) {
             PrintError(L"清除当前 JDK PATH 失败");
-            return 3;
+        } else {
+            PrintInfo(L"已清除当前 JDK PATH，已恢复 Oracle javapath");
         }
 
         // 2. 删除 JMT 自身 PATH 条目
-        std::wstring path = RegistryOperator::getPath(target);
-        auto entries = PathUtils::splitPath(path);
-        entries = PathUtils::removeEntries(entries, ctx.exeDirectory);
-        std::wstring newPath;
-        for (size_t i = 0; i < entries.size(); ++i) {
-            if (i > 0) newPath += L';';
-            newPath += entries[i];
+        {
+            std::wstring path = RegistryOperator::getPath(target);
+            auto entries = PathUtils::splitPath(path);
+            entries = PathUtils::removeEntries(entries, ctx.exeDirectory);
+            std::wstring newPath;
+            for (size_t i = 0; i < entries.size(); ++i) {
+                if (i > 0) newPath += L';';
+                newPath += entries[i];
+            }
+            RegistryOperator::setPath(newPath, target);
+            PrintInfo(L"已从 PATH 中移除 JMT 自身目录");
         }
-        RegistryOperator::setPath(newPath, target);
 
-        // 3. 删除缓存文件
+        // 3. 删除 .trash 回收站
+        {
+            std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
+            if (IsDirectory(trashRoot)) {
+                try {
+                    fs::remove_all(trashRoot);
+                    PrintInfo(L"已删除 .trash 回收站");
+                } catch (const std::exception& e) {
+                    PrintWarning(L"删除 .trash 失败: " + ToWideString(e.what()));
+                }
+            } else {
+                PrintInfo(L".trash 不存在，跳过");
+            }
+        }
+
+        // 4. 删除 .temp 下载缓存
+        {
+            std::wstring tempDir = JoinPath(ctx.exeDirectory, L".temp");
+            if (IsDirectory(tempDir)) {
+                try {
+                    fs::remove_all(tempDir);
+                    PrintInfo(L"已删除 .temp 下载缓存");
+                } catch (const std::exception& e) {
+                    PrintWarning(L"删除 .temp 失败: " + ToWideString(e.what()));
+                }
+            } else {
+                PrintInfo(L".temp 不存在，跳过");
+            }
+        }
+
+        // 5. 删除缓存文件
         if (IsFile(ctx.cacheFilePath)) {
             DeleteFileW(ctx.cacheFilePath.c_str());
-            PrintInfo(L"已删除缓存文件: " + ctx.cacheFilePath);
+            PrintInfo(L"已删除缓存文件");
         }
 
-        // 4. （可选）清理任何残留的 JAVA_HOME* 变量（向后兼容）
-        // 这里我们只是尝试删除，忽略错误
+        // 6. 清理所有 JAVA_HOME* 变量
         auto varNames = RegistryOperator::enumerateEnvValueNames(target);
+        bool hasJavaHome = false;
         for (const auto& name : varNames) {
             if (name.find(L"JAVA_HOME") == 0) {
                 RegistryOperator::deleteEnvString(name, target);
+                hasJavaHome = true;
             }
+        }
+        if (hasJavaHome) {
+            PrintInfo(L"已清理 JAVA_HOME 环境变量");
         }
 
         PrintSuccess(L"完全清理完成");
@@ -132,7 +178,35 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
             fs::remove_all(tempDir);
             PrintSuccess(L"已删除 .temp 目录");
         } catch (const std::exception& e) {
-            PrintError(L"删除 .temp 目录失败: " + std::wstring(e.what(), e.what() + strlen(e.what())));
+            PrintError(L"删除 .temp 目录失败: " + ToWideString(e.what()));
+            return 3;
+        }
+        return 0;
+    }
+
+    // ---------- remove trash ----------
+    if (subCmd == L"trash") {
+        std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
+        if (!IsDirectory(trashRoot)) {
+            PrintInfo(L"回收站不存在，无需清理");
+            return 0;
+        }
+
+        PrintWarning(L"此操作将永久删除回收站中的所有 JDK 备份，不可恢复！");
+        PrintInfo(L"请输入 'y' 确认，其他任意键取消：");
+        int ch = _getwch();
+        if (ch != L'y' && ch != L'Y') {
+            PrintInfo(L"操作已取消");
+            return 0;
+        }
+        PrintInfo(L""); // 换行
+
+        try {
+            fs::remove_all(trashRoot);
+            PrintSuccess(L"回收站已清空");
+        } catch (const std::exception& e) {
+            std::wstring errMsg = ToWideString(e.what());
+            PrintError(L"清空失败: " + errMsg);
             return 3;
         }
         return 0;
@@ -206,7 +280,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
         // ---- 将 JDK 目录移动到回收站 ----
         if (IsDirectory(jdkPath)) {
-            std::wstring trashRoot = ctx.exeDirectory + L"\\.jmt_trash";
+            std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
             CreateDirectoryW(trashRoot.c_str(), nullptr);
 
             // 生成唯一目录名：jdk-<版本>_<时间戳>
@@ -227,7 +301,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
                     fs::remove_all(jdkPath);
                     PrintInfo(L"复制完成，原目录已删除");
                 } catch (const std::exception& e) {
-                    PrintError(L"复制或删除失败: " + std::wstring(e.what(), e.what() + strlen(e.what())));
+                    PrintError(L"复制或删除失败: " + ToWideString(e.what()));
                     return 4;
                 }
             } else {
@@ -257,6 +331,6 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
     // 未知子命令
     PrintError(L"未知子命令: " + subCmd);
-    PrintInfo(L"可用子命令: env, all, temp, <版本号>");
+    PrintInfo(L"可用子命令: env, all, temp, trash, <版本号>");
     return 1;
 }
