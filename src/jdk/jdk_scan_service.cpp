@@ -147,26 +147,25 @@ std::vector<std::pair<std::wstring, std::wstring>> JdkScanService::scanJdks(
     std::vector<std::pair<std::wstring, std::wstring>> result;
 
     if (!force) {
-        FileLock lock(paths_.cacheFile);
-        if (lock.tryLock()) {
-            std::wstring content = ReadFileText(paths_.cacheFile);
-            if (!content.empty()) {
-                std::vector<VersionCandidate> cached;
-                if (parseCache(content, cached)) {
-                    for (const auto& [ver, path] : cached) {
-                        if (JdkScanService::isValidJdk(path)) {
-                            result.push_back({ver, path});
-                        } else {
-                            out_.line(OutputLevel::Debug, L"Cache entry invalid: " + path);
-                        }
+        // 读取不加锁：写侧由 FileLock 串行化，读侧读到半成品时解析会失败并回退到重扫。
+        // （此前读操作在持锁句柄之外进行，会被字节范围锁拒绝，导致缓存永远失效、每次全盘扫描）
+        const std::wstring content = ReadFileText(paths_.cacheFile);
+        if (!content.empty()) {
+            std::vector<VersionCandidate> cached;
+            if (parseCache(content, cached)) {
+                for (const auto& [ver, path] : cached) {
+                    if (JdkScanService::isValidJdk(path)) {
+                        result.push_back({ver, path});
+                    } else {
+                        out_.line(OutputLevel::Debug, L"Cache entry invalid: " + path);
                     }
-                    if (result.size() != cached.size()) {
-                        writeCache(result);
-                    }
-                    return result;
                 }
-                out_.line(OutputLevel::Debug, L"缓存缺少 schema 标记（旧格式），重新扫描");
+                if (result.size() != cached.size()) {
+                    writeCache(result);
+                }
+                return result;
             }
+            out_.line(OutputLevel::Debug, L"缓存缺少 schema 标记（旧格式），重新扫描");
         }
     }
 
