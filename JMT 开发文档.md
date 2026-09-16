@@ -817,6 +817,7 @@ build/jmt_tests.exe --suite path_utils
 | download/1 | `network/host_throttle`：单主机并发上限（默认 2）、最小请求间隔、指数退避 + 抖动、单 URL/单主机/单命令三级预算、429/503/403 拉黑 10 分钟；注入下载链路（acquire/release/noteResult）。curl 改为静默 + 超时 + 统一 UA + 状态码解析；`.temp` 文件名按 URL 哈希唯一化；多线程连接数跟随策略（2）；`executePlan` 跳过被拉黑主机并在失败摘要里输出请求次数 |
 | download/2 | `common/cancel_token`：全局取消开关；REPL 与单次模式的 Ctrl+C 都会中断下载，`TerminateProcess` 终止 curl 子进程并删除半成品；多线程引擎各循环响应取消 |
 | download/4 | `network/curl_output`：解析 curl 的 `--progress-bar` 百分比与 `-w` 收尾统计（状态码/字节/用时/速度）+ 里程碑计算。`downloadFileWithCurl` 改为边等边读管道：百分比走 `IOutput::progress` 原地刷新，25/50/75/100% 额外打印普通行（重定向可见），无百分比时每 5 秒心跳；成功后打印「下载完成: X MB，平均 Y MB/s」 |
+| download/6 | 进度显示修正：① 去掉 curl 的 `-s`（silent 会把进度条一起关掉，导致 211MB 下载全程只显示「正在连接/下载」）；② 修复重复打印（同一心跳既走 `progress` 又走 `line`，且前者无换行造成粘连），现在每次只输出一条；③ 进度行统一带「已下载 X MB + 已用时 N 秒」，有百分比时每 10 秒或每 25% 打一行普通输出，无百分比时每 5 秒一行；④ 新增 `downloadedSizeOf()` 直接读取目标文件大小作为「已下载」来源；⑤ `parseStatsFromTail()` 从输出最后一行读 `-w` 统计（此前从头读会读到进度条里的数字，导致「下载完成: 0 KB」）；⑥ 修复 `ExtractVersionFromUrl` 把 URL 里的 IP（`http://127.0.0.1/...`）当成版本号的 bug，改为先匹配 `jdk/openjdk` 后的版本串、再回退到 `/17/` 这种独立路径段 |
 
 **尚未完成**（原阶段 3 计划的其余部分，留待下一批）：
 

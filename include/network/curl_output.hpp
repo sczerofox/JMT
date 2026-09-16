@@ -77,6 +77,27 @@ inline Stats parseStats(const std::string& text) {
     return stats;
 }
 
+// 从完整输出里取「最后一个非空行」再解析：curl 的 -w 统计写在最后一行，
+// 前面可能混着进度条输出（含各种数字），因此不能从头读。
+inline Stats parseStatsFromTail(const std::string& text) {
+    size_t end = text.size();
+    for (int lines = 0; lines < 8 && end > 0; ++lines) {
+        const size_t begin = text.find_last_of("\r\n", end - 1);
+        const std::string line = (begin == std::string::npos)
+                                         ? text.substr(0, end)
+                                         : text.substr(begin + 1, end - begin - 1);
+        const Stats stats = parseStats(line);
+        if (stats.parsed) {
+            return stats;
+        }
+        if (begin == std::string::npos) {
+            break;
+        }
+        end = begin;
+    }
+    return Stats{};
+}
+
 // 人类可读的字节数：12.3 MB
 inline std::string formatBytes(int64_t bytes) {
     char buffer[64];

@@ -113,6 +113,18 @@ std::wstring JdkDownloadService::tempDownloadPath(const std::wstring& ext, const
 // 统一的 User-Agent：镜像方可以据此识别 JMT（而不是无名的 curl）
 static const wchar_t* kJmtUserAgent = L"JMT/1.7 (Windows; +https://github.com/sczerofox/JMT)";
 
+// 读取正在下载的目标文件大小（拿不到时返回 0）；用于「已下载 X MB」显示
+static int64_t downloadedSizeOf(const std::wstring& path) {
+    HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER size{};
+    const bool ok = GetFileSizeEx(handle, &size) != 0;
+    CloseHandle(handle);
+    return ok ? size.QuadPart : 0;
+}
+
 // ---------- 辅助函数：使用 curl.exe 下载 ----------
 bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath,
                                               int& outStatus, int64_t& outBytes, int& outSpeedBps) {
@@ -133,8 +145,9 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
     }
 
     // 镜像友好：连接/总超时、标识 UA、重试降到 2 次。
-    // 进度用 --progress-bar 但输出被我们接管（见下方循环），因此既能看到进度也不会污染 JMT 的输出流。
-    std::wstring cmdLine = L"\"" + std::wstring(curlPath) + L"\" -L -s -S --progress-bar"
+    // 注意：这里不能用 -s（silent 会连进度条一起关掉）；curl 的输出被我们接管到管道，
+    // 因此既拿得到进度，也不会污染 JMT 的输出流。
+    std::wstring cmdLine = L"\"" + std::wstring(curlPath) + L"\" -L --progress-bar"
                            L" --retry 2 --connect-timeout 15 --max-time 900"
                            L" -A \"" + kJmtUserAgent + L"\""
                            L" -o \"" + destPath + L"\" \"" + cleanUrl + L"\""
@@ -172,6 +185,7 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
     int lastPercent = -1;
     int lastMilestone = 0;
     int maxPercent = -1;
+    int nextHeartbeatSec = 5;
     const int64_t startedAt = static_cast<int64_t>(GetTickCount64());
 
     // 边等边读：把 curl 的进度条解析成 JMT 自己的进度显示；期间响应 Ctrl+C
@@ -188,26 +202,38 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
             captured.append(buffer, read);
         }
         const int percent = curl_output::parsePercent(captured);
-        if (percent >= 0 && percent != lastPercent) {
-            lastPercent = percent;
-            if (percent > maxPercent) maxPercent = percent;
-            const int elapsedMs = static_cast<int>(GetTickCount64() - startedAt);
-            out_.progress(L"下载中: " + std::to_wstring(percent) + L"%  （已用时 " +
-                          std::to_wstring(elapsedMs / 1000) + L" 秒）");
-            // 里程碑行：普通输出，重定向到文件时同样可见
-            if (const int milestone = curl_output::milestoneCrossed(lastMilestone, percent); milestone > 0) {
-                lastMilestone = milestone;
-                out_.line(OutputLevel::Info, L"下载进度: " + std::to_wstring(milestone) + L"%（已用时 " +
-                                             std::to_wstring(elapsedMs / 1000) + L" 秒）");
+        const int64_t downloadedBytes = downloadedSizeOf(destPath);
+        const int elapsedSec = static_cast<int>((GetTickCount64() - startedAt) / 1000);
+        const std::wstring downloadedText = ToWideString(curl_output::formatBytes(downloadedBytes));
+
+        if (percent >= 0) {
+            // 服务端给了总长度：控制台上原地刷新；另外每跨过 25% 或每 10 秒补一行普通输出
+            // （这样控制台有实时刷新，日志/重定向也有可读的进度轨迹）
+            if (percent != lastPercent) {
+                lastPercent = percent;
+                if (percent > maxPercent) maxPercent = percent;
+                out_.progress(L"下载中: " + std::to_wstring(percent) + L"%    已下载 " + downloadedText +
+                              L"    已用时 " + std::to_wstring(elapsedSec) + L" 秒");
             }
-        } else if (percent < 0 && lastPercent < 0) {
-            // 还没拿到百分比（连接阶段/服务端不报总长）：每 5 秒给一次心跳，避免看起来像卡住
-            const int elapsedMs = static_cast<int>(GetTickCount64() - startedAt);
-            if (elapsedMs % 5000 < 300) {
-                out_.progress(L"正在连接/下载... 已用时 " + std::to_wstring(elapsedMs / 1000) + L" 秒");
-                out_.line(OutputLevel::Info, L"正在连接/下载... 已用时 " +
-                                             std::to_wstring(elapsedMs / 1000) + L" 秒");
+            const int milestone = curl_output::milestoneCrossed(lastMilestone, percent);
+            const bool periodic = (elapsedSec >= nextHeartbeatSec);
+            if (milestone > 0 || periodic) {
+                if (milestone > 0) {
+                    lastMilestone = milestone;
+                }
+                if (periodic) {
+                    nextHeartbeatSec = elapsedSec + 10;
+                }
+                out_.line(OutputLevel::Info, L"下载中: " + std::to_wstring(percent) + L"%    已下载 " +
+                                             downloadedText + L"    已用时 " +
+                                             std::to_wstring(elapsedSec) + L" 秒");
             }
+        } else if (elapsedSec >= nextHeartbeatSec) {
+            // 拿不到百分比（连接中/服务端不报总长）：每 5 秒一行，避免看起来像卡住
+            nextHeartbeatSec = elapsedSec + 5;
+            const std::wstring phase = (downloadedBytes > 0) ? L"正在下载..." : L"正在连接...";
+            out_.line(OutputLevel::Info, phase + L" 已用时 " + std::to_wstring(elapsedSec) +
+                                         L" 秒    已下载 " + downloadedText);
         }
     }
 
@@ -230,7 +256,7 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
     }
 
     // -w 的收尾统计放在最后一行：状态码 / 字节数 / 用时 / 速度
-    const curl_output::Stats stats = curl_output::parseStats(captured);
+    const curl_output::Stats stats = curl_output::parseStatsFromTail(captured);
     if (stats.parsed) {
         outStatus = stats.httpStatus;
         outBytes = stats.bytes;
@@ -431,15 +457,17 @@ static std::vector<std::wstring> ReadUrlListFromFile(const std::wstring& filePat
 
 // ---------- 从 URL 中提取版本号 ----------
 static std::wstring ExtractVersionFromUrl(const std::wstring& url) {
-    // 尝试匹配模式：/jdk/11.0.2/ 或 /openjdk/17.0.2/ 等
-    std::wregex pattern(L"[/-](\\d+)(?:\\.\\d+)*[/_-]");
+    // 1) 优先匹配 jdk/openjdk 后面的版本（jdk-17.0.2 / openjdk-17 / jdk1.8.0_202 / jdk-8u202）
+    //    先做这一步，避免把 URL 里的 IP（http://127.0.0.1/...）或端口当成版本号
+    std::wregex jdkPattern(L"(?:jdk|openjdk)[-_]?(\\d+(?:[uU]\\d+)?(?:\\.\\d+)*)");
     std::wsmatch match;
-    if (std::regex_search(url, match, pattern) && match.size() > 1) {
+    if (std::regex_search(url, match, jdkPattern) && match.size() > 1) {
         return match[1].str();
     }
-    // 如果匹配失败，尝试更宽松的匹配
-    std::wregex pattern2(L"(\\d+)(?:\\.\\d+)*");
-    if (std::regex_search(url, match, pattern2) && match.size() > 1) {
+
+    // 2) 回退：版本号作为独立路径段出现，如 /17/ 或 /11.0.2/
+    std::wregex segmentPattern(L"/(\\d+(?:\\.\\d+)*)/");
+    if (std::regex_search(url, match, segmentPattern) && match.size() > 1) {
         return match[1].str();
     }
     return L"";
