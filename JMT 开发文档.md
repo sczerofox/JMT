@@ -315,9 +315,11 @@ static void writeCache(const std::vector<std::pair<std::wstring, std::wstring>>&
 
 **版本提取** `extractVersion`：
 
-1. 读 `<path>\release`，正则 `JAVA_VERSION="(\d+)(?:\.(\d+))?`；主版本为 `1` 时取次版本（`1.8.0_202` → `8`）
-2. 回退路径匹配 `jdk(?:1\.(\d+)|[-_]?(\d+))`，覆盖 `jdk1.8.0_202` / `jdk-17.0.2` / `jdk17` / `openjdk-11.0.2`
-3. 都匹配不到返回空串（该目录不会被收录）
+1. 读 `<path>\release`，正则 `JAVA_VERSION="([^"]+)"` 并交给 `JavaVersion::parse`，**原样返回完整版本**（`17.0.9` / `22` / `1.8.0_202`）
+2. 回退路径匹配 `(?:jdk|openjdk)[-_]?(\d+(?:[uU]\d+)?(?:\.\d+)*(?:_\d+)?)`，覆盖 `jdk-17.0.2` / `jdk1.8.0_202` / `jdk-8u202` / `jdk17` / `openjdk-11.0.2`
+3. 都解析不出有效版本时返回空串（该目录不会被收录）
+
+**重要**：目录名常常只有主版本（实测 `D:\Program Files\Java\jdk-17` 的 `release` 是 `JAVA_VERSION="17.0.9"`），所以版本必须以 `release` 为准，不能从目录名推断。
 
 **扫描策略** `scanJdks`：
 
@@ -741,7 +743,13 @@ build/jmt_tests.exe --suite path_utils
 | 9 | `src/command/version_command.cpp` / `src/console/repl_engine.cpp` | 版本号与 banner 各自硬编码 | 升级版本需三处同步（含文档），无单一数据源 |
 | 10 | `resources/app.rc` | 只有图标，没有 `VERSIONINFO` 资源 | 文件属性页看不到版本信息，只能靠 `jmt version` |
 | 11 | `src/jdk/jdk_scan_service.cpp` | 同版本 JDK 只保留先扫描到的那一份（`seen` 去重）；扫描深度固定 3 层 | 多份同版本安装无法在 `list` 中共存；深层目录中的 JDK 不会被发现 |
-| 12 | `src/command/search_command.cpp` / `remove`/`download` 中的 `std::stoi(版本号)` | 版本号必须能转成整数 | 缓存中出现非数字版本号会抛出异常（由外层 `try-catch` 转换为退出码 1）；阶段 3 引入 `JavaVersion` 结构体后消除 |
+| 12 | `src/command/download_command.cpp`（官方源） | 官方 Adoptium 端点只有 `latest/{feature}`，没有按补丁版本选择 | `download 17.0.9 java` 拿到的是 17 系列最新版；靠 `versionSatisfied` 校验后放弃该源，精确版本请走镜像源（阶段 3 支持 `/v3/binary/version/...` 后消除） |
+
+版本模型阶段（11.2）已消除的老问题（保留记录）：
+
+- 版本被截断成主版本（`17.0.9` → `17`、`1.8.0_202` → `8`），`use`/`remove` 无法指定补丁版本
+- 用 `std::stoi` 比较版本导致 `17.0.2` 与 `17.0.9` 视为相等
+- 缓存读取被文件锁拒绝，缓存从未生效、每次全盘扫描
 
 ### 10.5 本地资料（不随仓库发布）
 
@@ -788,11 +796,25 @@ build/jmt_tests.exe --suite path_utils
 
 > 注意：`integration.registry_user_scope` 会写注册表，沙箱环境下会被拒绝（`Requested registry access is not allowed`），需要在沙箱外运行 `ctest`（或用管理员/普通用户终端直接跑 `jmt_tests.exe --suite registry_user_scope`）。
 
-### 11.2 后续阶段（尚未开始）
+### 11.2 阶段 2（版本模型与精确版本）已完成
 
-1. **阶段 2 · 下载子系统重做**：`DownloadSource` 策略化（优先级/测速/并发重试）+ 统一的「下载→校验→解压→安装」管线 + 取消与速度上报
-2. **阶段 3 · 版本模型与扫描**：`JavaVersion` 结构体（major/minor/patch/build）+ 缓存 schema 版本 + 并行/可取消扫描
-3. **阶段 4 · 可测性与 CI**：注入式 fake（注册表/文件系统/HTTP）+ PATH/回收站往返集成测试 + GitHub Actions 跑 `ctest`（同时决定 `tests/` 是否改为发布）
+| 提交 | 内容 |
+|------|------|
+| version/1 | `common/java_version.hpp`：`JavaVersion` 解析（`17.0.9` / `22` / `1.8.0_202` / `8u202` / `17.0.2+8`）、比较、别名匹配；`jdk/version_match.hpp`：`resolveVersion` / `sortByVersionDesc` / `maxVersion` |
+| version/2 | `extractVersion` 返回完整版本；缓存写入 `#jmt-cache-v2` 头，旧格式判为无效并要求重扫；扫描去重从「按版本」改为「按路径」（同版本多份都保留） |
+| version/3 | `getCurrentVersion` 支持注入 `VersionResolver`（默认读 `release`），用户 PATH 优先，解析失败回退路径文本 |
+| version/4 | `use` 支持完整版本/主版本/前缀/别名并新增 `--exact`，命中多条取最高并打印候选；`remove` 放宽版本参数、按真实版本比较取最大、缓存按路径剔除；`search` 最大版本改用 `JavaVersion`；`list` 按版本倒序 |
+| version/5 | `download` 保留完整版本（安装目录 `jdk-17.0.2`）、`filterUrlsForVersion` 按版本筛源、`versionSatisfied` 安装后校验（不一致则删除并放弃该源） |
+| version/6 | `CommandBase::preflight` 钩子：提权前做只读校验，版本不存在时直接返回 2 而不弹 UAC |
+| version/7 | 修复缓存读取被独占文件锁拒绝导致缓存永远失效、每次全盘扫描的问题 |
+
+**范围说明**：本轮**未改造** `data output` / `data input`（按要求暂缓）。它们的文件格式仍是 `版本号|路径`，只是版本字段现在会写成完整版本；`data input` 调用 `downloadAndInstall` 时按 `use` 相同规则处理。
+
+### 11.3 后续阶段（尚未开始）
+
+1. **阶段 3 · 下载子系统重做**：`DownloadSource` 策略化（优先级/测速/并发重试）+ 统一的「下载→校验→解压→安装」管线 + 取消与速度上报；顺带支持官方源的精确版本（`/v3/binary/version/...`）
+2. **阶段 4 · 扫描与数据**：并行/可取消扫描、进度显示；`data output/input` 改造与版本字段迁移
+3. **阶段 5 · 可测性与 CI**：注入式 fake（文件系统/HTTP）+ PATH/回收站往返集成测试 + GitHub Actions 跑 `ctest`（同时决定 `tests/` 是否改为发布）
 
 ---
 
