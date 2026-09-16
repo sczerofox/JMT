@@ -28,8 +28,7 @@ int wmain(int argc, wchar_t* argv[]) {
 
     // 构建上下文
     JmtContext ctx;
-    ctx.exeDirectory = GetExeDirectory();
-    ctx.cacheFilePath = JoinPath(ctx.exeDirectory, L".jmt_cache");
+    ctx.paths = AppPaths::fromExecutable();
     ctx.isInteractive = (argc == 1);
     ctx.isElevated = ElevationHelper::IsElevated();
 

@@ -23,6 +23,7 @@ set(JMT_CORE_SOURCES
         src/command/help_command.cpp
         src/command/rollback_command.cpp
         src/command/data_command.cpp
+        src/app/app_paths.cpp
         src/jdk/jdk_scan_service.cpp
         src/jdk/java_env_service.cpp
         src/jdk/jdk_download_service.cpp

@@ -108,7 +108,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
     }
 
     // ----- 检查是否已存在该版本 -----
-    auto jdks = JdkScanService::scanJdks(false, ctx.cacheFilePath, true);
+    auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
     bool exists = false;
     std::wstring existingPath;
     for (const auto& [ver, path] : jdks) {
@@ -131,7 +131,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
         // 将旧目录移动到回收站
         std::wstring trashPath;
-        if (!MoveToTrash(existingPath, majorVersion, ctx.exeDirectory, trashPath)) {
+        if (!MoveToTrash(existingPath, majorVersion, ctx.paths.exeDir, trashPath)) {
             PrintError(L"移动旧版本到回收站失败，请手动删除 " + existingPath);
             return 4;
         }
@@ -141,7 +141,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         auto newJdks = jdks;
         newJdks.erase(std::remove_if(newJdks.begin(), newJdks.end(),
                                      [&](const auto& p) { return p.first == majorVersion; }), newJdks.end());
-        JdkScanService::writeCache(newJdks, ctx.cacheFilePath);
+        JdkScanService::writeCache(newJdks, ctx.paths.cacheFile);
 
         // ---- 更新 PATH：如果当前版本被删除，则切换到最大版本 ----
         std::wstring currentVer = JavaEnvService::getCurrentVersion();
@@ -209,7 +209,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
     // ----- 安装成功，更新缓存并设置当前版本 -----
     // 强制刷新缓存，获取最新列表
-    auto updatedJdks = JdkScanService::scanJdks(true, ctx.cacheFilePath, true);
+    auto updatedJdks = JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
     bool foundNew = false;
     for (const auto& [v, p] : updatedJdks) {
         if (p == installPath || v == majorVersion) { // 若路径匹配或版本匹配

@@ -6,7 +6,7 @@
 
 int ShellCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
     // 获取 jmt.exe 的完整路径
-    std::wstring exePath = GetExeDirectory() + L"\\jmt.exe";
+    const std::wstring& exePath = ctx.paths.exePath;
 
     // 构建 cmd 命令行：/k 表示执行后保持窗口打开，并运行 jmt.exe（无参进入交互模式）
     std::wstring cmdLine = L"/k \"" + exePath + L"\"";

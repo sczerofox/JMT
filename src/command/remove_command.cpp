@@ -64,7 +64,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
         std::wstring path = RegistryOperator::getPath(target);
         auto entries = PathUtils::splitPath(path);
-        entries = PathUtils::removeEntries(entries, ctx.exeDirectory);
+        entries = PathUtils::removeEntries(entries, ctx.paths.exeDir);
         std::wstring newPath;
         for (size_t i = 0; i < entries.size(); ++i) {
             if (i > 0) newPath += L';';
@@ -104,7 +104,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         {
             std::wstring path = RegistryOperator::getPath(target);
             auto entries = PathUtils::splitPath(path);
-            entries = PathUtils::removeEntries(entries, ctx.exeDirectory);
+            entries = PathUtils::removeEntries(entries, ctx.paths.exeDir);
             std::wstring newPath;
             for (size_t i = 0; i < entries.size(); ++i) {
                 if (i > 0) newPath += L';';
@@ -116,7 +116,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
         // 3. 删除 .trash 回收站
         {
-            std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
+            std::wstring trashRoot = ctx.paths.trashDir;
             if (IsDirectory(trashRoot)) {
                 try {
                     fs::remove_all(trashRoot);
@@ -131,7 +131,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
         // 4. 删除 .temp 下载缓存
         {
-            std::wstring tempDir = JoinPath(ctx.exeDirectory, L".temp");
+            std::wstring tempDir = ctx.paths.tempDir;
             if (IsDirectory(tempDir)) {
                 try {
                     fs::remove_all(tempDir);
@@ -145,8 +145,8 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         }
 
         // 5. 删除缓存文件
-        if (IsFile(ctx.cacheFilePath)) {
-            DeleteFileW(ctx.cacheFilePath.c_str());
+        if (IsFile(ctx.paths.cacheFile)) {
+            DeleteFileW(ctx.paths.cacheFile.c_str());
             PrintInfo(L"已删除缓存文件");
         }
 
@@ -169,7 +169,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
     // ---------- remove temp ----------
     if (subCmd == L"temp") {
-        std::wstring tempDir = JoinPath(ctx.exeDirectory, L".temp");
+        std::wstring tempDir = ctx.paths.tempDir;
         if (!IsDirectory(tempDir)) {
             PrintInfo(L".temp 目录不存在，无需清理");
             return 0;
@@ -186,7 +186,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
     // ---------- remove trash ----------
     if (subCmd == L"trash") {
-        std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
+        std::wstring trashRoot = ctx.paths.trashDir;
         if (!IsDirectory(trashRoot)) {
             PrintInfo(L"回收站不存在，无需清理");
             return 0;
@@ -218,10 +218,10 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         PrintInfo(L"正在删除 JDK 版本 " + version + L" ...");
 
         // 获取当前 JDK 列表（使用缓存，若缓存无效则强制扫描）
-        auto jdks = JdkScanService::scanJdks(false, ctx.cacheFilePath, true);
+        auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
         if (jdks.empty()) {
             PrintInfo(L"缓存为空，强制扫描...");
-            jdks = JdkScanService::scanJdks(true, ctx.cacheFilePath, true);
+            jdks = JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
             if (jdks.empty()) {
                 PrintWarning(L"未找到任何 JDK");
                 return 2;
@@ -280,7 +280,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
         // ---- 将 JDK 目录移动到回收站 ----
         if (IsDirectory(jdkPath)) {
-            std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
+            std::wstring trashRoot = ctx.paths.trashDir;
             CreateDirectoryW(trashRoot.c_str(), nullptr);
 
             // 生成唯一目录名：jdk-<版本>_<时间戳>
@@ -319,7 +319,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         auto newJdks = jdks;
         newJdks.erase(std::remove_if(newJdks.begin(), newJdks.end(),
                                      [&](const auto& p) { return p.first == version; }), newJdks.end());
-        JdkScanService::writeCache(newJdks, ctx.cacheFilePath);
+        JdkScanService::writeCache(newJdks, ctx.paths.cacheFile);
 
         // ---- 删除任何残留的 JAVA_HOME<version> 变量（向后兼容） ----
         RegistryOperator::deleteEnvString(L"JAVA_HOME" + version, target);

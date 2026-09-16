@@ -29,7 +29,7 @@ int UseCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) 
     }
     const std::wstring& ver = args[1];
 
-    auto jdks = JdkScanService::scanJdks(false, ctx.cacheFilePath, true);
+    auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
     bool found = false;
     std::wstring targetPath;
     for (const auto& [v, p] : jdks) {

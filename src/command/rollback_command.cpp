@@ -48,7 +48,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
     // ----- 1. list 子命令（无需提权）-----
     if (args[1] == L"list") {
-        std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
+        std::wstring trashRoot = ctx.paths.trashDir;
         if (!IsDirectory(trashRoot)) {
             PrintInfo(L"回收站为空，没有可回退的版本");
             return 0;
@@ -118,7 +118,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
     // ----- 3. 恢复指定版本 -----
     std::wstring version = args[1];
 
-    std::wstring trashRoot = ctx.exeDirectory + L"\\.trash";
+    std::wstring trashRoot = ctx.paths.trashDir;
     if (!IsDirectory(trashRoot)) {
         PrintError(L"回收站不存在，没有可回退的版本");
         return 2;
@@ -227,7 +227,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
     // ----- 强制刷新缓存（重要！）-----
     if (restoreSuccess) {
         PrintInfo(L"正在刷新 JDK 缓存...");
-        auto jdks = JdkScanService::scanJdks(true, ctx.cacheFilePath, true);
+        auto jdks = JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
         PrintSuccess(L"版本 " + version + L" 已还原至 " + originalPath);
         PrintWarning(L"请运行 'jmt search' 或 'jmt use' 重新配置环境变量（若需要）");
     } else {

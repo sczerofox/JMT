@@ -1,9 +1,9 @@
 #pragma once
 #include <string>
+#include "app/app_paths.hpp"
 
 struct JmtContext {
-    std::wstring exeDirectory;
-    std::wstring cacheFilePath;
+    AppPaths paths;
     bool isInteractive;
     bool isElevated;
 };

@@ -24,14 +24,14 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
     if (subCmd == L"output") {
         PrintInfo(L"正在扫描合法 JDK...");
 
-        auto jdks = JdkScanService::scanJdks(false, ctx.cacheFilePath, true);
+        auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
         if (jdks.empty()) {
             PrintWarning(L"未找到任何合法 JDK，无法导出");
             return 2;
         }
 
         // 创建 .data 目录
-        std::wstring dataDir = JoinPath(ctx.exeDirectory, L".data");
+        std::wstring dataDir = ctx.paths.dataDir;
         CreateDirectoryW(dataDir.c_str(), nullptr);
 
         // 写入 ver_out.txt（格式：version|path\n，与 .jmt_cache 一致）
@@ -74,7 +74,7 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
         }
 
         // 1. 读取并解析 ver_out.txt
-        std::wstring dataDir = JoinPath(ctx.exeDirectory, L".data");
+        std::wstring dataDir = ctx.paths.dataDir;
         std::wstring inputPath = JoinPath(dataDir, L"ver_out.txt");
         if (!IsFile(inputPath)) {
             PrintError(L"未找到导入文件: " + inputPath);
@@ -173,7 +173,7 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
 
         // 3. 更新缓存
         if (successCount > 0) {
-            JdkScanService::scanJdks(true, ctx.cacheFilePath, true);
+            JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
         }
 
         // 4. 汇总
@@ -187,7 +187,7 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
         PrintInfo(L"=====================================");
 
         if (exeCount > 0) {
-            std::wstring tempDir = JoinPath(ctx.exeDirectory, L".temp");
+            std::wstring tempDir = ctx.paths.tempDir;
             PrintWarning(L"EXE 安装包已下载到 " + tempDir + L" 目录，请手动运行安装");
         }
         if (successCount > 0) {

@@ -28,7 +28,7 @@ int SearchCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
     if (args.size() > 1 && StringHelper::equalsIgnoreCase(args[1], L"--force"))
         force = true;
 
-    auto jdks = JdkScanService::scanJdks(force, ctx.cacheFilePath);
+    auto jdks = JdkScanService::scanJdks(force, ctx.paths.cacheFile);
     if (jdks.empty()) {
         PrintWarning(L"未找到任何合法 JDK");
         return 2;

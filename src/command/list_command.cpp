@@ -4,7 +4,7 @@
 #include "console/color_print.hpp"
 
 int ListCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
-    auto jdks = JdkScanService::scanJdks(false, ctx.cacheFilePath, true);
+    auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
     if (jdks.empty()) {
         PrintWarning(L"未找到任何 JDK，请运行 'search' 强制扫描");
         return 2;
