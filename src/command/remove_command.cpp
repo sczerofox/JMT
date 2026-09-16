@@ -7,6 +7,7 @@
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
 #include "app/env_scope.hpp"
+#include "jdk/version_match.hpp"
 #include <algorithm>
 #include <cctype>
 #include <conio.h>
@@ -203,9 +204,9 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
     }
 
     // ---------- remove <version> ----------
-    if (std::regex_match(subCmd, std::wregex(L"^\\d+$"))) {
-        std::wstring version = subCmd;
-        ctx.out->line(OutputLevel::Info, L"正在删除 JDK 版本 " + version + L" ...");
+    if (!subCmd.empty() && ::iswdigit(subCmd[0]) != 0) {
+        const std::wstring query = subCmd;
+        ctx.out->line(OutputLevel::Info, L"正在删除 JDK 版本 " + query + L" ...");
 
         // 获取当前 JDK 列表（使用缓存，若缓存无效则强制扫描）
         auto jdks = ctx.scan->scanJdks(false, true);
@@ -218,15 +219,21 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
             }
         }
 
-        // 查找要删除的版本
-        auto it = std::find_if(jdks.begin(), jdks.end(),
-                               [&](const auto& p) { return p.first == version; });
-        if (it == jdks.end()) {
-            ctx.out->line(OutputLevel::Error, L"未找到版本 " + version + L" 的 JDK");
+        // 查找要删除的版本（完整版本精确匹配，或主版本/前缀匹配到最高版本）
+        const VersionMatch match = resolveVersion(jdks, query);
+        if (!match.found) {
+            ctx.out->line(OutputLevel::Error, L"未找到版本 " + query + L" 的 JDK，可用 'jmt list' 查看");
             return ExitCode::NotFound;
         }
+        const std::wstring version = match.version;
+        if (match.ambiguous) {
+            ctx.out->line(OutputLevel::Info, L"版本 " + query + L" 命中多个已安装版本，已选择最高的 " + version);
+            for (const auto& [candidateVersion, candidatePath] : match.candidates) {
+                ctx.out->line(OutputLevel::Debug, L"  候选: " + candidateVersion + L" -> " + candidatePath);
+            }
+        }
 
-        std::wstring jdkPath = it->second;
+        const std::wstring jdkPath = match.path;
 
         // ---- 处理 PATH 切换（如果删除的是当前版本） ----
         std::wstring currentVer = ctx.env->getCurrentVersion();
@@ -237,15 +244,19 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
                 if (v != version) otherJdks.push_back({v, p});
             }
             if (!otherJdks.empty()) {
-                auto maxIt = std::max_element(otherJdks.begin(), otherJdks.end(),
-                                              [](const auto& a, const auto& b) {
-                                                  return std::stoi(a.first) < std::stoi(b.first);
-                                              });
-                if (!ctx.env->setCurrentJdk(maxIt->second, target)) {
+                const std::wstring maxVer = maxVersion(otherJdks);
+                std::wstring maxPath;
+                for (const auto& [version2, path2] : otherJdks) {
+                    if (version2 == maxVer) {
+                        maxPath = path2;
+                        break;
+                    }
+                }
+                if (!ctx.env->setCurrentJdk(maxPath, target)) {
                     ctx.out->line(OutputLevel::Error, L"切换到最大版本失败");
                     return ExitCode::PermissionDenied;
                 }
-                ctx.out->line(OutputLevel::Info, L"已自动切换到版本 " + maxIt->first);
+                ctx.out->line(OutputLevel::Info, L"已自动切换到版本 " + maxVer);
             } else {
                 // 无其他版本，清除当前 JDK
                 if (!ctx.env->clearCurrentJdk(target)) {
@@ -308,7 +319,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
         // ---- 更新缓存（移除已删除版本） ----
         auto newJdks = jdks;
         newJdks.erase(std::remove_if(newJdks.begin(), newJdks.end(),
-                                     [&](const auto& p) { return p.first == version; }), newJdks.end());
+                                     [&](const auto& p) { return p.second == jdkPath; }), newJdks.end());
         ctx.scan->writeCache(newJdks);
 
         // ---- 删除任何残留的 JAVA_HOME<version> 变量（向后兼容） ----

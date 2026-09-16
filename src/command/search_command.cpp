@@ -5,6 +5,7 @@
 #include "common/string_helper.hpp"
 #include "app/elevation_gate.hpp"
 #include "app/env_scope.hpp"
+#include "jdk/version_match.hpp"
 
 ExitCode SearchCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     const EnvScope scope = EnvScope::parse(args);
@@ -28,12 +29,15 @@ ExitCode SearchCommand::execute(const std::vector<std::wstring>& args, AppContex
     }
 
     // PATH 中没有 JDK，选择最大版本
-    auto maxIt = std::max_element(jdks.begin(), jdks.end(),
-                                  [](const auto& a, const auto& b) {
-                                      return std::stoi(a.first) < std::stoi(b.first);
-                                  });
-    std::wstring maxVer = maxIt->first;
-    std::wstring maxPath = maxIt->second;
+    // 按真实版本比较（例如 17.0.9 高于 17.0.2），旧实现用 std::stoi 会把它们视为相等
+    const std::wstring maxVer = maxVersion(jdks);
+    std::wstring maxPath;
+    for (const auto& [version, path] : jdks) {
+        if (version == maxVer) {
+            maxPath = path;
+            break;
+        }
+    }
 
     // 切换 PATH 到最大版本
     if (!ctx.env->setCurrentJdk(maxPath, scope.target)) {

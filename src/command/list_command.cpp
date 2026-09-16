@@ -2,6 +2,7 @@
 #include "jdk/jdk_scan_service.hpp"
 #include "jdk/java_env_service.hpp"
 #include "platform/output.hpp"
+#include "jdk/version_match.hpp"
 
 ExitCode ListCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     auto jdks = ctx.scan->scanJdks(false, true);
@@ -12,7 +13,8 @@ ExitCode ListCommand::execute(const std::vector<std::wstring>& args, AppContext&
 
     std::wstring currentVer = ctx.env->getCurrentVersion();
     ctx.out->line(OutputLevel::Info, L"已安装的 Java 版本：");
-    for (const auto& [ver, path] : jdks) {
+    // 按真实版本从高到低展示
+    for (const auto& [ver, path] : sortByVersionDesc(jdks)) {
         if (ver == currentVer) {
             ctx.out->line(OutputLevel::Success, L"  Java " + ver + L" (当前生效)  -> " + path);
         } else {
