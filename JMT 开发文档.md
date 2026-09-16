@@ -810,7 +810,24 @@ build/jmt_tests.exe --suite path_utils
 
 **范围说明**：本轮**未改造** `data output` / `data input`（按要求暂缓）。它们的文件格式仍是 `版本号|路径`，只是版本字段现在会写成完整版本；`data input` 调用 `downloadAndInstall` 时按 `use` 相同规则处理。
 
-### 11.3 后续阶段（尚未开始）
+### 11.3 阶段 3（下载子系统）进行中
+
+| 提交 | 内容 |
+|------|------|
+| download/1 | `network/host_throttle`：单主机并发上限（默认 2）、最小请求间隔、指数退避 + 抖动、单 URL/单主机/单命令三级预算、429/503/403 拉黑 10 分钟；注入下载链路（acquire/release/noteResult）。curl 改为静默 + 超时 + 统一 UA + 状态码解析；`.temp` 文件名按 URL 哈希唯一化；多线程连接数跟随策略（2）；`executePlan` 跳过被拉黑主机并在失败摘要里输出请求次数 |
+| download/2 | `common/cancel_token`：全局取消开关；REPL 与单次模式的 Ctrl+C 都会中断下载，`TerminateProcess` 终止 curl 子进程并删除半成品；多线程引擎各循环响应取消 |
+
+**尚未完成**（原阶段 3 计划的其余部分，留待下一批）：
+
+1. `IDownloadEngine` 端口 + `CurlEngine` / `MultiThreadEngine` 统一抽象（当前仍按函数分支，但已全部经由节流器）
+2. 统一安装管线 `installFromSource`：消除 `tryZipSource` / `tryExeSource` / `tryOfficialZip` 三份重复（下载→校验→解压→嵌套修复→版本校验）
+3. 校验增强：魔数与最小尺寸校验统一到两个引擎、可选 SHA-256（官方源 `.sha256`）、解压前 zip-slip 防护
+4. 失败源**持久化**拉黑（当前仅进程内 10 分钟）
+5. 官方源精确补丁版本（`/v3/binary/version/{release_name}`）
+6. `Result<InstallOutcome>` 取代 `L"EXE_DOWNLOADED"` 哨兵；`.part` 复用（同会话断点续传）
+7. 进度显示速度/ETA（当前仍只有百分比）
+
+### 11.4 后续阶段（尚未开始）
 
 1. **阶段 3 · 下载子系统重做**：`DownloadSource` 策略化（优先级/测速/并发重试）+ 统一的「下载→校验→解压→安装」管线 + 取消与速度上报；顺带支持官方源的精确版本（`/v3/binary/version/...`）
 2. **阶段 4 · 扫描与数据**：并行/可取消扫描、进度显示；`data output/input` 改造与版本字段迁移
