@@ -45,7 +45,7 @@ void ReplEngine::run() {
 
         // 提权：与单次命令模式共用同一套元数据驱动逻辑
         const ElevationDecision decision =
-                ElevationGate::ensure(command->requiresElevation(), tokens, ctx_);
+                ElevationGate::ensure(command->requiresElevation(), command->allowsUserScope(), tokens, ctx_);
         if (!decision.proceed) {
             if (decision.code != ExitCode::Ok) {
                 ctx_.out->line(OutputLevel::Debug, L"命令返回码: " + std::to_wstring(toInt(decision.code)));

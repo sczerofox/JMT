@@ -69,7 +69,8 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     // 提权：由命令元数据（CommandBase::requiresElevation）驱动，统一走 ElevationGate
-    const ElevationDecision decision = ElevationGate::ensure(command->requiresElevation(), args, ctx);
+    const ElevationDecision decision =
+            ElevationGate::ensure(command->requiresElevation(), command->allowsUserScope(), args, ctx);
     if (!decision.proceed) {
         return toInt(decision.code);
     }
