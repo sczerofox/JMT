@@ -26,7 +26,9 @@ void ReplEngine::run() {
     printBanner();
     while (true) {
         g_interrupted = 0;
-        std::wcout << L"jmt> " << std::flush;
+        // 提示符前先换行：避免与上一条命令的输出（尤其是原地刷新的进度行）粘在同一行
+        ctx_.out->clearProgress();
+        std::wcout << L"\n" << L"jmt> " << std::flush;
         std::wstring line;
         std::getline(std::wcin, line);
         if (g_interrupted) {
