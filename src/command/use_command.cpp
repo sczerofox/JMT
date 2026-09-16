@@ -6,6 +6,34 @@
 #include "app/env_scope.hpp"
 #include "jdk/version_match.hpp"
 
+// 提权前先确认版本存在（避免版本打错也弹 UAC）
+ExitCode UseCommand::preflight(const std::vector<std::wstring>& args, AppContext& ctx) {
+    const EnvScope scope = EnvScope::parse(args);
+
+    bool exactOnly = false;
+    std::vector<std::wstring> positional;
+    for (const auto& arg : scope.args) {
+        if (arg == L"--exact") {
+            exactOnly = true;
+        } else {
+            positional.push_back(arg);
+        }
+    }
+    if (positional.size() < 2) {
+        return ExitCode::Ok;   // 参数错误交给 execute 统一提示
+    }
+
+    const std::vector<VersionCandidate> jdks = ctx.scan->scanJdks(false, true);
+    const VersionMatch match = resolveVersion(jdks, positional[1], exactOnly);
+    if (match.found) {
+        return ExitCode::Ok;
+    }
+
+    ctx.out->line(OutputLevel::Error, L"未找到版本 " + positional[1] +
+                  (exactOnly ? L"（--exact 只接受完整版本）" : L"，可用 'jmt list' 查看已安装版本"));
+    return ExitCode::NotFound;
+}
+
 ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     const EnvScope scope = EnvScope::parse(args);
 

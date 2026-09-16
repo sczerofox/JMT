@@ -68,6 +68,11 @@ int wmain(int argc, wchar_t* argv[]) {
         return toInt(ExitCode::BadArgs);
     }
 
+    // 提权前先做只读校验：版本不存在之类的问题不必弹 UAC
+    if (const ExitCode preflight = command->preflight(args, ctx); preflight != ExitCode::Ok) {
+        return toInt(preflight);
+    }
+
     // 提权：由命令元数据（CommandBase::requiresElevation）驱动，统一走 ElevationGate
     const ElevationDecision decision =
             ElevationGate::ensure(command->requiresElevation(), command->allowsUserScope(), args, ctx);

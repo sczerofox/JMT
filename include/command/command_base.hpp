@@ -19,6 +19,13 @@ public:
     // 可以免提权执行（见 ElevationGate::ensure）。
     [[nodiscard]] virtual bool allowsUserScope() const { return false; }
 
+    // 提权之前的只读校验：参数合法性、目标是否存在等。
+    // 默认什么都不做；返回非 Ok 时调用方直接结束（不会再弹 UAC）。
+    virtual ExitCode preflight([[maybe_unused]] const std::vector<std::wstring>& args,
+                               [[maybe_unused]] AppContext& ctx) {
+        return ExitCode::Ok;
+    }
+
     virtual ExitCode execute(const std::vector<std::wstring>& args, AppContext& ctx) = 0;
     [[nodiscard]] virtual std::wstring getHelp() const = 0;
 };

@@ -43,6 +43,12 @@ void ReplEngine::run() {
             continue;
         }
 
+        // 提权前先做只读校验（与单次命令模式一致）
+        if (const ExitCode preflight = command->preflight(tokens, ctx_); preflight != ExitCode::Ok) {
+            ctx_.out->line(OutputLevel::Debug, L"命令返回码: " + std::to_wstring(toInt(preflight)));
+            continue;
+        }
+
         // 提权：与单次命令模式共用同一套元数据驱动逻辑
         const ElevationDecision decision =
                 ElevationGate::ensure(command->requiresElevation(), command->allowsUserScope(), tokens, ctx_);

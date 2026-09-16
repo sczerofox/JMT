@@ -16,6 +16,25 @@
 
 namespace fs = std::filesystem;
 
+// 提权前先确认目标版本存在（env/all/temp/trash 不需要校验，直接放行）
+ExitCode RemoveCommand::preflight(const std::vector<std::wstring>& args, AppContext& ctx) {
+    const EnvScope scope = EnvScope::parse(args);
+    if (scope.args.size() < 2) {
+        return ExitCode::Ok;   // 参数错误交给 execute 提示
+    }
+    const std::wstring& subCmd = scope.args[1];
+    if (subCmd.empty() || ::iswdigit(subCmd[0]) == 0) {
+        return ExitCode::Ok;   // 子命令分支（env/all/temp/trash）或非法参数
+    }
+
+    const std::vector<VersionCandidate> jdks = ctx.scan->scanJdks(false, true);
+    if (resolveVersion(jdks, subCmd).found) {
+        return ExitCode::Ok;
+    }
+    ctx.out->line(OutputLevel::Error, L"未找到版本 " + subCmd + L" 的 JDK，可用 'jmt list' 查看");
+    return ExitCode::NotFound;
+}
+
 ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     // 解析 --user / --sys（提权已由 main / REPL 按命令元数据统一处理）
     const EnvScope scope = EnvScope::parse(args);
