@@ -28,7 +28,12 @@ private:
     static std::vector<std::wstring> enumerateEnvValueNames(EnvTarget target);
 
     static HKEY getRootKey(EnvTarget target);
-    static bool openEnvKey(HKEY& hKey, HKEY root, bool writeAccess);
+    // 目标对应的环境变量子键：系统 = HKLM\SYSTEM\...\Session Manager\Environment，
+    // 用户 = HKCU\Environment（注意 HKCU 下没有 SYSTEM\... 这条路径）
+    static const wchar_t* envKeyPath(EnvTarget target);
+    // Auto → {系统, 用户}；其余 → 单一目标
+    static std::vector<EnvTarget> targetsFor(EnvTarget target);
+    static bool openEnvKey(HKEY& hKey, EnvTarget target, bool writeAccess);
     static bool writeStringValue(HKEY hKey, const std::wstring& valueName, const std::wstring& data);
     static bool readStringValue(HKEY hKey, const std::wstring& valueName, std::wstring& out);
     static bool deleteValue(HKEY hKey, const std::wstring& valueName);

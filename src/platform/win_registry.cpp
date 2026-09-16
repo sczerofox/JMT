@@ -64,10 +64,34 @@ HKEY WinRegistry::getRootKey(EnvTarget target) {
     }
 }
 
-bool WinRegistry::openEnvKey(HKEY& hKey, HKEY root, bool writeAccess) {
+const wchar_t* WinRegistry::envKeyPath(EnvTarget target) {
+    if (target == EnvTarget::UserOnly) {
+        return L"Environment";
+    }
+    return L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
+}
+
+std::vector<EnvTarget> WinRegistry::targetsFor(EnvTarget target) {
+    switch (target) {
+        case EnvTarget::SystemOnly: return {EnvTarget::SystemOnly};
+        case EnvTarget::UserOnly:   return {EnvTarget::UserOnly};
+        default:                    return {EnvTarget::SystemOnly, EnvTarget::UserOnly};
+    }
+}
+
+bool WinRegistry::openEnvKey(HKEY& hKey, EnvTarget target, bool writeAccess) {
     REGSAM access = writeAccess ? KEY_READ | KEY_WRITE : KEY_READ;
-    LONG ret = RegOpenKeyExW(root, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", 0, access, &hKey);
-    return (ret == ERROR_SUCCESS);
+    HKEY root = getRootKey(target);
+    const wchar_t* subKey = envKeyPath(target);
+    if (RegOpenKeyExW(root, subKey, 0, access, &hKey) == ERROR_SUCCESS) {
+        return true;
+    }
+    // 用户级环境变量键在极少数系统上可能不存在：写模式下尝试创建
+    if (target == EnvTarget::UserOnly && writeAccess) {
+        DWORD disposition = 0;
+        return RegCreateKeyExW(root, subKey, 0, nullptr, 0, access, nullptr, &hKey, &disposition) == ERROR_SUCCESS;
+    }
+    return false;
 }
 
 bool WinRegistry::writeStringValue(HKEY hKey, const std::wstring& valueName, const std::wstring& data) {
@@ -94,15 +118,10 @@ bool WinRegistry::deleteValue(HKEY hKey, const std::wstring& valueName) {
 }
 
 bool WinRegistry::writeEnvString(const std::wstring& key, const std::wstring& value, EnvTarget target) {
-    HKEY hKey;
     bool success = false;
-    EnvTarget attempts[2] = { EnvTarget::SystemOnly, EnvTarget::UserOnly };
-    int count = (target == EnvTarget::Auto) ? 2 : 1;
-    int start = (target == EnvTarget::Auto) ? 0 : ((target == EnvTarget::SystemOnly) ? 0 : 1);
-    for (int i = 0; i < count; ++i) {
-        EnvTarget t = attempts[start + i];
-        HKEY root = getRootKey(t);
-        if (openEnvKey(hKey, root, true)) {
+    for (EnvTarget t : targetsFor(target)) {
+        HKEY hKey = nullptr;
+        if (openEnvKey(hKey, t, true)) {
             if (writeStringValue(hKey, key, value)) {
                 success = true;
                 RegCloseKey(hKey);
@@ -110,25 +129,19 @@ bool WinRegistry::writeEnvString(const std::wstring& key, const std::wstring& va
             }
             RegCloseKey(hKey);
         }
-        // 若失败且为Auto，继续尝试下一个
+        // 若失败且为 Auto，继续尝试下一个目标
     }
     if (success) {
-        // 替换原广播为增强版
         BroadcastEnvironmentChange();
     }
     return success;
 }
 
 std::wstring WinRegistry::readEnvString(const std::wstring& key, EnvTarget target) {
-    HKEY hKey;
     std::wstring out;
-    EnvTarget attempts[2] = { EnvTarget::SystemOnly, EnvTarget::UserOnly };
-    int count = (target == EnvTarget::Auto) ? 2 : 1;
-    int start = (target == EnvTarget::Auto) ? 0 : ((target == EnvTarget::SystemOnly) ? 0 : 1);
-    for (int i = 0; i < count; ++i) {
-        EnvTarget t = attempts[start + i];
-        HKEY root = getRootKey(t);
-        if (openEnvKey(hKey, root, false)) {
+    for (EnvTarget t : targetsFor(target)) {
+        HKEY hKey = nullptr;
+        if (openEnvKey(hKey, t, false)) {
             if (readStringValue(hKey, key, out)) {
                 RegCloseKey(hKey);
                 return out;
@@ -140,15 +153,10 @@ std::wstring WinRegistry::readEnvString(const std::wstring& key, EnvTarget targe
 }
 
 bool WinRegistry::deleteEnvString(const std::wstring& key, EnvTarget target) {
-    HKEY hKey;
     bool success = false;
-    EnvTarget attempts[2] = { EnvTarget::SystemOnly, EnvTarget::UserOnly };
-    int count = (target == EnvTarget::Auto) ? 2 : 1;
-    int start = (target == EnvTarget::Auto) ? 0 : ((target == EnvTarget::SystemOnly) ? 0 : 1);
-    for (int i = 0; i < count; ++i) {
-        EnvTarget t = attempts[start + i];
-        HKEY root = getRootKey(t);
-        if (openEnvKey(hKey, root, true)) {
+    for (EnvTarget t : targetsFor(target)) {
+        HKEY hKey = nullptr;
+        if (openEnvKey(hKey, t, true)) {
             if (deleteValue(hKey, key)) {
                 success = true;
                 RegCloseKey(hKey);
@@ -158,7 +166,6 @@ bool WinRegistry::deleteEnvString(const std::wstring& key, EnvTarget target) {
         }
     }
     if (success) {
-        // 替换原广播为增强版
         BroadcastEnvironmentChange();
     }
     return success;
@@ -175,9 +182,8 @@ bool WinRegistry::setPath(const std::wstring& path, EnvTarget target) {
 
 std::vector<std::wstring> WinRegistry::enumerateEnvValueNames(EnvTarget target) {
     std::vector<std::wstring> result;
-    HKEY hKey;
-    HKEY root = getRootKey(target);
-    if (!openEnvKey(hKey, root, false)) {
+    HKEY hKey = nullptr;
+    if (!openEnvKey(hKey, target, false)) {
         return result;
     }
 
