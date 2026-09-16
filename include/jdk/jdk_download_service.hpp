@@ -41,9 +41,12 @@ private:
     std::wstring tempDownloadPath(const std::wstring& ext, const std::wstring& url);
 
     // 下载与解压
-    bool downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath, int& outStatus);
-    bool downloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath, int& outStatus);
-    bool downloadFile(const std::wstring& url, const std::wstring& destPath, int& outStatus);
+    bool downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath,
+                              int& outStatus, int64_t& outBytes, int& outSpeedBps);
+    bool downloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath,
+                                     int& outStatus, int64_t& outBytes, int& outSpeedBps);
+    bool downloadFile(const std::wstring& url, const std::wstring& destPath,
+                      int& outStatus, int64_t& outBytes, int& outSpeedBps);
     bool extractZip(const std::wstring& zipPath, const std::wstring& destDir);
     bool isValidZipFile(const std::wstring& path);
     bool fixNestedJdkDirectory(const std::wstring& targetDir);
