@@ -24,6 +24,7 @@ set(JMT_CORE_SOURCES
         src/command/rollback_command.cpp
         src/command/data_command.cpp
         src/app/app_paths.cpp
+        src/app/elevation_gate.cpp
         src/jdk/jdk_scan_service.cpp
         src/jdk/java_env_service.cpp
         src/jdk/jdk_download_service.cpp
@@ -35,6 +36,7 @@ set(JMT_CORE_SOURCES
         src/system/utils.cpp
         src/common/string_helper.cpp
         src/platform/console_output.cpp
+        src/platform/win_elevator.cpp
         src/console/color_print.cpp
         src/console/console_progress.cpp
         src/console/repl_engine.cpp

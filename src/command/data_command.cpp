@@ -3,7 +3,7 @@
 #include "jdk/jdk_download_service.hpp"
 #include "console/color_print.hpp"
 #include "system/utils.hpp"
-#include "system/elevation_helper.hpp"
+#include "app/elevation_gate.hpp"
 #include <windows.h>
 #include <conio.h>
 #include <filesystem>
@@ -56,21 +56,7 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
     if (subCmd == L"input") {
         // 提权
         if (!ctx.isElevated) {
-            std::wstring cmdLine;
-            for (size_t i = 0; i < args.size(); ++i) {
-                if (i > 0) cmdLine += L' ';
-                if (args[i].find(L' ') != std::wstring::npos)
-                    cmdLine += L'"' + args[i] + L'"';
-                else
-                    cmdLine += args[i];
-            }
-            PrintInfo(L"需要管理员权限，正在请求提权...");
-            if (ElevationHelper::RelaunchElevated(cmdLine)) {
-                return 0;
-            } else {
-                PrintError(L"提权失败，请手动以管理员身份运行");
-                return 3;
-            }
+            return toInt(ElevationGate::ensureElevated(args));
         }
 
         // 1. 读取并解析 ver_out.txt
