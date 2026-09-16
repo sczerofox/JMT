@@ -1,7 +1,7 @@
 #include "command/data_command.hpp"
 #include "jdk/jdk_scan_service.hpp"
 #include "jdk/jdk_download_service.hpp"
-#include "console/color_print.hpp"
+#include "platform/output.hpp"
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
 #include <windows.h>
@@ -12,9 +12,9 @@ namespace fs = std::filesystem;
 
 ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     if (args.size() < 2) {
-        PrintError(L"用法: data <子命令>");
-        PrintInfo(L"  子命令: output    - 导出当前 JDK 列表到 .data\\ver_out.txt");
-        PrintInfo(L"          input     - 从 .data\\ver_out.txt 导入并安装 JDK");
+        ctx.out->line(OutputLevel::Error, L"用法: data <子命令>");
+        ctx.out->line(OutputLevel::Info, L"  子命令: output    - 导出当前 JDK 列表到 .data\\ver_out.txt");
+        ctx.out->line(OutputLevel::Info, L"          input     - 从 .data\\ver_out.txt 导入并安装 JDK");
         return ExitCode::BadArgs;
     }
 
@@ -22,11 +22,11 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
 
     // ---------- data output ----------
     if (subCmd == L"output") {
-        PrintInfo(L"正在扫描合法 JDK...");
+        ctx.out->line(OutputLevel::Info, L"正在扫描合法 JDK...");
 
         auto jdks = ctx.scan->scanJdks(false, true);
         if (jdks.empty()) {
-            PrintWarning(L"未找到任何合法 JDK，无法导出");
+            ctx.out->line(OutputLevel::Warning, L"未找到任何合法 JDK，无法导出");
             return ExitCode::NotFound;
         }
 
@@ -42,10 +42,10 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
         }
 
         if (WriteFileText(outputPath, content)) {
-            PrintSuccess(L"导出成功，共 " + std::to_wstring(jdks.size()) + L" 个版本");
-            PrintInfo(L"文件: " + outputPath);
+            ctx.out->line(OutputLevel::Success, L"导出成功，共 " + std::to_wstring(jdks.size()) + L" 个版本");
+            ctx.out->line(OutputLevel::Info, L"文件: " + outputPath);
         } else {
-            PrintError(L"写入文件失败: " + outputPath);
+            ctx.out->line(OutputLevel::Error, L"写入文件失败: " + outputPath);
             return ExitCode::IoOrNetwork;
         }
 
@@ -64,14 +64,14 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
         std::wstring dataDir = ctx.paths.dataDir;
         std::wstring inputPath = JoinPath(dataDir, L"ver_out.txt");
         if (!IsFile(inputPath)) {
-            PrintError(L"未找到导入文件: " + inputPath);
-            PrintInfo(L"请先执行 'jmt data output' 导出列表");
+            ctx.out->line(OutputLevel::Error, L"未找到导入文件: " + inputPath);
+            ctx.out->line(OutputLevel::Info, L"请先执行 'jmt data output' 导出列表");
             return ExitCode::NotFound;
         }
 
         std::wstring content = ReadFileText(inputPath);
         if (content.empty()) {
-            PrintError(L"导入文件为空");
+            ctx.out->line(OutputLevel::Error, L"导入文件为空");
             return ExitCode::NotFound;
         }
 
@@ -97,8 +97,8 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
         }
 
         if (entries.empty()) {
-            PrintError(L"导入文件格式错误，未解析到有效条目");
-            PrintInfo(L"格式要求：每行 版本号|安装路径");
+            ctx.out->line(OutputLevel::Error, L"导入文件格式错误，未解析到有效条目");
+            ctx.out->line(OutputLevel::Info, L"格式要求：每行 版本号|安装路径");
             return ExitCode::BadArgs;
         }
 
@@ -108,32 +108,32 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
         int failCount = 0;
         int skipCount = 0;
 
-        PrintInfo(L"=====================================");
-        PrintInfo(L"    开始检查并导入 JDK 列表");
-        PrintInfo(L"=====================================");
+        ctx.out->line(OutputLevel::Info, L"=====================================");
+        ctx.out->line(OutputLevel::Info, L"    开始检查并导入 JDK 列表");
+        ctx.out->line(OutputLevel::Info, L"=====================================");
 
         for (const auto& [ver, path] : entries) {
-            PrintInfo(L"");
-            PrintInfo(L"--- JDK " + ver + L" ---");
-            PrintInfo(L"  目标路径: " + path);
+            ctx.out->line(OutputLevel::Info, L"");
+            ctx.out->line(OutputLevel::Info, L"--- JDK " + ver + L" ---");
+            ctx.out->line(OutputLevel::Info, L"  目标路径: " + path);
 
             // 检查路径下是否已存在合法 JDK
             if (JdkScanService::isValidJdk(path)) {
-                PrintSuccess(L"JDK " + ver + L" 已存在，无需安装");
+                ctx.out->line(OutputLevel::Success, L"JDK " + ver + L" 已存在，无需安装");
                 skipCount++;
                 continue;
             }
 
             // 不存在合法 JDK，询问是否安装
-            PrintWarning(L"该路径下未找到合法 JDK，需要下载并安装");
-            PrintInfo(L"是否下载并安装到该路径？(y/n): ");
+            ctx.out->line(OutputLevel::Warning, L"该路径下未找到合法 JDK，需要下载并安装");
+            ctx.out->line(OutputLevel::Info, L"是否下载并安装到该路径？(y/n): ");
             int ch = _getwch();
             if (ch != L'y' && ch != L'Y') {
-                PrintInfo(L"\n  已跳过");
+                ctx.out->line(OutputLevel::Info, L"\n  已跳过");
                 skipCount++;
                 continue;
             }
-            PrintInfo(L"");
+            ctx.out->line(OutputLevel::Info, L"");
 
             // 提取父目录作为安装根目录
             std::wstring installRoot = path;
@@ -143,17 +143,17 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
                 CreateDirectoryW(installRoot.c_str(), nullptr);
             }
 
-            PrintInfo(L"正在安装 JDK " + ver + L" ...");
+            ctx.out->line(OutputLevel::Info, L"正在安装 JDK " + ver + L" ...");
             std::wstring result = ctx.download->downloadAndInstall(ver, installRoot);
 
             if (result == L"EXE_DOWNLOADED") {
-                PrintWarning(L"JDK " + ver + L" 安装程序已下载到 .temp 目录，请手动完成安装");
+                ctx.out->line(OutputLevel::Warning, L"JDK " + ver + L" 安装程序已下载到 .temp 目录，请手动完成安装");
                 exeCount++;
             } else if (!result.empty()) {
-                PrintSuccess(L"JDK " + ver + L" 安装成功: " + result);
+                ctx.out->line(OutputLevel::Success, L"JDK " + ver + L" 安装成功: " + result);
                 successCount++;
             } else {
-                PrintError(L"JDK " + ver + L" 安装失败");
+                ctx.out->line(OutputLevel::Error, L"JDK " + ver + L" 安装失败");
                 failCount++;
             }
         }
@@ -164,28 +164,28 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
         }
 
         // 4. 汇总
-        PrintInfo(L"");
-        PrintInfo(L"=====================================");
-        PrintInfo(L"导入完成汇总：");
-        PrintInfo(std::wstring(L"  无需安装（已存在）: ") + std::to_wstring(skipCount) + L" 个");
-        PrintInfo(std::wstring(L"  成功安装: ") + std::to_wstring(successCount) + L" 个");
-        if (exeCount > 0) PrintInfo(L"  已下载 EXE: " + std::to_wstring(exeCount) + L" 个（需手动安装）");
-        if (failCount > 0) PrintInfo(L"  失败: " + std::to_wstring(failCount) + L" 个");
-        PrintInfo(L"=====================================");
+        ctx.out->line(OutputLevel::Info, L"");
+        ctx.out->line(OutputLevel::Info, L"=====================================");
+        ctx.out->line(OutputLevel::Info, L"导入完成汇总：");
+        ctx.out->line(OutputLevel::Info, std::wstring(L"  无需安装（已存在）: ") + std::to_wstring(skipCount) + L" 个");
+        ctx.out->line(OutputLevel::Info, std::wstring(L"  成功安装: ") + std::to_wstring(successCount) + L" 个");
+        if (exeCount > 0) ctx.out->line(OutputLevel::Info, L"  已下载 EXE: " + std::to_wstring(exeCount) + L" 个（需手动安装）");
+        if (failCount > 0) ctx.out->line(OutputLevel::Info, L"  失败: " + std::to_wstring(failCount) + L" 个");
+        ctx.out->line(OutputLevel::Info, L"=====================================");
 
         if (exeCount > 0) {
             std::wstring tempDir = ctx.paths.tempDir;
-            PrintWarning(L"EXE 安装包已下载到 " + tempDir + L" 目录，请手动运行安装");
+            ctx.out->line(OutputLevel::Warning, L"EXE 安装包已下载到 " + tempDir + L" 目录，请手动运行安装");
         }
         if (successCount > 0) {
-            PrintInfo(L"请重启终端或运行 'jmt search' 刷新环境变量");
+            ctx.out->line(OutputLevel::Info, L"请重启终端或运行 'jmt search' 刷新环境变量");
         }
 
         return failCount > 0 ? ExitCode::IoOrNetwork : ExitCode::Ok;
     }
 
     // 未知子命令
-    PrintError(L"未知子命令: " + subCmd);
-    PrintInfo(L"可用子命令: output, input");
+    ctx.out->line(OutputLevel::Error, L"未知子命令: " + subCmd);
+    ctx.out->line(OutputLevel::Info, L"可用子命令: output, input");
     return ExitCode::BadArgs;
 }

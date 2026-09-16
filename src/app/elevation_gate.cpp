@@ -3,7 +3,6 @@
 #include "app/app_context.hpp"
 #include "platform/elevator.hpp"
 // 过渡期：提示语沿用既有 Print* 转发（skeleton/8 改为注入 IOutput）
-#include "console/color_print.hpp"
 
 std::wstring ElevationGate::buildCommandLine(const std::vector<std::wstring>& args) {
     std::wstring commandLine;
@@ -29,10 +28,10 @@ ElevationDecision ElevationGate::ensure(bool requiresElevation,
 
 ElevationDecision ElevationGate::requestElevation(const std::vector<std::wstring>& args,
                                                   AppContext& ctx) {
-    PrintInfo(L"需要管理员权限，正在请求提权...");
+    ctx.out->line(OutputLevel::Info, L"需要管理员权限，正在请求提权...");
     if (ctx.elevator != nullptr && ctx.elevator->relaunchElevated(buildCommandLine(args))) {
         return ElevationDecision{false, ExitCode::Ok};
     }
-    PrintError(L"提权失败，请手动以管理员身份运行");
+    ctx.out->line(OutputLevel::Error, L"提权失败，请手动以管理员身份运行");
     return ElevationDecision{false, ExitCode::PermissionDenied};
 }

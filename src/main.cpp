@@ -12,7 +12,6 @@
 #include "command/rollback_command.hpp"
 #include "command/data_command.hpp"
 #include "console/repl_engine.hpp"
-#include "console/color_print.hpp"
 #include "app/app_runtime.hpp"
 #include "app/elevation_gate.hpp"
 #include "system/utils.hpp"
@@ -21,9 +20,6 @@
 #include <memory>
 
 int wmain(int argc, wchar_t* argv[]) {
-    // 初始化控制台
-    InitConsole();
-
     // 组合根：装配 Win32 适配器与服务实例
     AppRuntime runtime(AppPaths::fromExecutable(), argc == 1);
     AppContext& ctx = runtime.context();
@@ -59,7 +55,7 @@ int wmain(int argc, wchar_t* argv[]) {
     // 单次命令模式
     if (args.empty()) {
         // 无参数但 argc>1？实际上不可能，但以防万一
-        PrintError(L"无命令");
+        ctx.out->line(OutputLevel::Error, L"无命令");
         return toInt(ExitCode::BadArgs);
     }
 
@@ -68,7 +64,7 @@ int wmain(int argc, wchar_t* argv[]) {
     // 执行命令
     auto* command = registry.findCommand(cmd);
     if (!command) {
-        PrintError(L"未知命令: " + cmd);
+        ctx.out->line(OutputLevel::Error, L"未知命令: " + cmd);
         return toInt(ExitCode::BadArgs);
     }
 
@@ -81,7 +77,7 @@ int wmain(int argc, wchar_t* argv[]) {
     try {
         return toInt(command->execute(args, ctx));
     } catch (const std::exception& e) {
-        PrintError(L"执行异常: " + ToWideString(e.what()));
+        ctx.out->line(OutputLevel::Error, L"执行异常: " + ToWideString(e.what()));
         return toInt(ExitCode::BadArgs);
     }
 }

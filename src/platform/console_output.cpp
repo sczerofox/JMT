@@ -85,3 +85,13 @@ void ConsoleOutput::progress(const std::wstring& text) {
     SetConsoleCursorPosition(handle, position);
     WriteConsoleW(handle, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
 }
+
+void ConsoleOutput::clearProgress() {
+    HANDLE handle = consoleHandle();
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    GetConsoleScreenBufferInfo(handle, &info);
+    const COORD position = {0, info.dwCursorPosition.Y};
+    DWORD written = 0;
+    FillConsoleOutputCharacterW(handle, L' ', info.dwSize.X, position, &written);
+    SetConsoleCursorPosition(handle, position);
+}

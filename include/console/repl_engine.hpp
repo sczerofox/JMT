@@ -10,5 +10,5 @@ public:
 private:
     CommandRegistry& registry_;
     AppContext& ctx_;
-    static void printBanner();
+    void printBanner();
 };

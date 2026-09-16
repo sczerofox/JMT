@@ -8,7 +8,7 @@
 #include "jdk/jmt_path_service.hpp"
 #include "platform/elevator.hpp"
 #include "platform/output.hpp"
-#include "system/registry_operator.hpp"
+#include "platform/win_registry.hpp"
 
 // 组合根：装配生产环境的 Win32 适配器与服务实例，并对外暴露 AppContext。
 // 测试不必使用本类，可以直接构造 AppContext + 自己的 fake 端口/服务。
@@ -22,7 +22,7 @@ public:
 
 private:
     ConsoleOutput output_;
-    RegistryOperator registry_;
+    WinRegistry registry_;
     WinElevator elevator_;
     AppContext ctx_;          // 先建上下文：服务会引用 ctx_.paths
     JdkScanService scan_;

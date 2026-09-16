@@ -11,6 +11,7 @@ public:
     virtual ~IOutput() = default;
     virtual void line(OutputLevel level, const std::wstring& text) = 0;
     virtual void progress(const std::wstring& text) = 0;
+    virtual void clearProgress() = 0;
 };
 
 // 控制台实现：ANSI 上色 + WriteConsoleW，行为与重构前的 color_print 完全一致。
@@ -21,6 +22,7 @@ public:
 
     void line(OutputLevel level, const std::wstring& text) override;
     void progress(const std::wstring& text) override;
+    void clearProgress() override;
 
 private:
     void writeLine(const wchar_t* tag, const std::wstring& text, int attributes);
@@ -34,4 +36,5 @@ class NullOutput : public IOutput {
 public:
     void line(OutputLevel, const std::wstring&) override {}
     void progress(const std::wstring&) override {}
+    void clearProgress() override {}
 };

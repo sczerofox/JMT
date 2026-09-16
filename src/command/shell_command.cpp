@@ -1,6 +1,6 @@
 #include "command/shell_command.hpp"
 #include "system/utils.hpp"
-#include "console/color_print.hpp"
+#include "platform/output.hpp"
 #include <windows.h>
 #include <shellapi.h>
 
@@ -24,7 +24,7 @@ ExitCode ShellCommand::execute(const std::vector<std::wstring>& args, AppContext
     // ShellExecuteW 返回值大于 32 表示成功
     if ((INT_PTR)hInst <= 32) {
         DWORD err = GetLastError();
-        PrintError(L"无法启动新终端，错误码: " + std::to_wstring(err));
+        ctx.out->line(OutputLevel::Error, L"无法启动新终端，错误码: " + std::to_wstring(err));
         return ExitCode::BadArgs;
     }
 
@@ -68,6 +68,6 @@ ExitCode ShellCommand::execute(const std::vector<std::wstring>& args, AppContext
         WriteConsoleInputW(hInput, records.data(), static_cast<DWORD>(records.size()), &written);
     }
 
-    PrintSuccess(L"已打开新终端，旧窗口即将执行 exit 命令关闭");
+    ctx.out->line(OutputLevel::Success, L"已打开新终端，旧窗口即将执行 exit 命令关闭");
     return ExitCode::Ok;
 }

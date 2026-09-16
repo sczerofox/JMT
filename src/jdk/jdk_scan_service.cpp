@@ -2,8 +2,6 @@
 #include "system/file_lock.hpp"
 #include "system/utils.hpp"
 #include "common/string_helper.hpp"
-#include "console/console_progress.hpp"
-#include "console/color_print.hpp"
 #include <algorithm>
 #include <regex>
 #include <set>
@@ -169,7 +167,7 @@ std::vector<std::pair<std::wstring, std::wstring>> JdkScanService::scanJdks(
         ScanDirectoryRecursive(drive, 0, 3, result, seen, found, drive);
     }
 
-    ConsoleProgress::ClearLine();
+    out_.clearProgress();
 
     // 输出所有找到的 JDK 路径（受 silent 控制）
     if (!silent && !result.empty()) {

@@ -1,6 +1,6 @@
 #include "command/rollback_command.hpp"
 #include "jdk/jdk_scan_service.hpp"
-#include "console/color_print.hpp"
+#include "platform/output.hpp"
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
 #include <windows.h>
@@ -41,8 +41,8 @@ static bool PathExists(const std::wstring& path) {
 ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     // ----- 0. 参数检查 -----
     if (args.size() < 2) {
-        PrintError(L"用法: rollback <version> 或 rollback list");
-        PrintInfo(L"  list  - 显示回收站中所有可回退的版本");
+        ctx.out->line(OutputLevel::Error, L"用法: rollback <version> 或 rollback list");
+        ctx.out->line(OutputLevel::Info, L"  list  - 显示回收站中所有可回退的版本");
         return ExitCode::BadArgs;
     }
 
@@ -50,7 +50,7 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
     if (args[1] == L"list") {
         std::wstring trashRoot = ctx.paths.trashDir;
         if (!IsDirectory(trashRoot)) {
-            PrintInfo(L"回收站为空，没有可回退的版本");
+            ctx.out->line(OutputLevel::Info, L"回收站为空，没有可回退的版本");
             return ExitCode::Ok;
         }
 
@@ -58,7 +58,7 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
         WIN32_FIND_DATAW fd;
         HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &fd);
         if (hFind == INVALID_HANDLE_VALUE) {
-            PrintInfo(L"回收站为空，没有可回退的版本");
+            ctx.out->line(OutputLevel::Info, L"回收站为空，没有可回退的版本");
             return ExitCode::Ok;
         }
 
@@ -83,16 +83,16 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
         FindClose(hFind);
 
         if (entries.empty()) {
-            PrintInfo(L"回收站中没有有效的 JDK 备份（元数据可能丢失）");
+            ctx.out->line(OutputLevel::Info, L"回收站中没有有效的 JDK 备份（元数据可能丢失）");
             return ExitCode::Ok;
         }
 
-        PrintInfo(L"回收站中可回退的 JDK 版本：");
+        ctx.out->line(OutputLevel::Info, L"回收站中可回退的 JDK 版本：");
         for (const auto& [ver, path] : entries) {
-            PrintInfo(L"  JDK " + ver + L"  -> 原始路径: " + path);
+            ctx.out->line(OutputLevel::Info, L"  JDK " + ver + L"  -> 原始路径: " + path);
         }
-        PrintSuccess(L"共 " + std::to_wstring(entries.size()) + L" 个版本可回退");
-        PrintInfo(L"使用 'rollback <版本号>' 恢复指定版本");
+        ctx.out->line(OutputLevel::Success, L"共 " + std::to_wstring(entries.size()) + L" 个版本可回退");
+        ctx.out->line(OutputLevel::Info, L"使用 'rollback <版本号>' 恢复指定版本");
         return ExitCode::Ok;
     }
 
@@ -107,7 +107,7 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
 
     std::wstring trashRoot = ctx.paths.trashDir;
     if (!IsDirectory(trashRoot)) {
-        PrintError(L"回收站不存在，没有可回退的版本");
+        ctx.out->line(OutputLevel::Error, L"回收站不存在，没有可回退的版本");
         return ExitCode::NotFound;
     }
 
@@ -116,7 +116,7 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
     WIN32_FIND_DATAW fd;
     HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &fd);
     if (hFind == INVALID_HANDLE_VALUE) {
-        PrintError(L"未找到版本 " + version + L" 的回收条目");
+        ctx.out->line(OutputLevel::Error, L"未找到版本 " + version + L" 的回收条目");
         return ExitCode::NotFound;
     }
 
@@ -133,7 +133,7 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
     FindClose(hFind);
 
     if (latestDir.empty()) {
-        PrintError(L"未找到有效的回收条目");
+        ctx.out->line(OutputLevel::Error, L"未找到有效的回收条目");
         return ExitCode::NotFound;
     }
 
@@ -141,15 +141,15 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
     std::wstring metaPath = JoinPath(trashPath, L".original_path");
     std::wstring originalPath = ReadFileText(metaPath);
     if (originalPath.empty()) {
-        PrintError(L"元数据丢失，无法还原");
+        ctx.out->line(OutputLevel::Error, L"元数据丢失，无法还原");
         return ExitCode::IoOrNetwork;
     }
 
     originalPath = CleanPath(originalPath);
-    PrintInfo(L"原始路径（清洗后）: " + originalPath);
+    ctx.out->line(OutputLevel::Info, L"原始路径（清洗后）: " + originalPath);
 
     if (PathExists(originalPath)) {
-        PrintError(L"原路径已存在，请手动处理: " + originalPath);
+        ctx.out->line(OutputLevel::Error, L"原路径已存在，请手动处理: " + originalPath);
         return ExitCode::NotFound;
     }
 
@@ -159,7 +159,7 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
     if (pos != std::wstring::npos) {
         parentDir = parentDir.substr(0, pos);
         if (!CreateDirectoryRecursive(parentDir)) {
-            PrintError(L"无法创建目标父目录: " + parentDir + L" (错误码: " + std::to_wstring(GetLastError()) + L")");
+            ctx.out->line(OutputLevel::Error, L"无法创建目标父目录: " + parentDir + L" (错误码: " + std::to_wstring(GetLastError()) + L")");
             return ExitCode::PermissionDenied;
         }
     }
@@ -169,11 +169,11 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
     bool restoreSuccess = false;
 
     if (moved) {
-        PrintInfo(L"移动成功");
+        ctx.out->line(OutputLevel::Info, L"移动成功");
         restoreSuccess = true;
     } else {
         DWORD err = GetLastError();
-        PrintInfo(L"移动失败（错误码: " + std::to_wstring(err) + L"），尝试使用 xcopy 复制...");
+        ctx.out->line(OutputLevel::Info, L"移动失败（错误码: " + std::to_wstring(err) + L"），尝试使用 xcopy 复制...");
 
         std::wstring xcopyCmd = L"/c xcopy /E /I /Y \"" + trashPath + L"\" \"" + originalPath + L"\"";
         SHELLEXECUTEINFOW sei = { sizeof(sei) };
@@ -192,18 +192,18 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
             if (exitCode == 0) {
                 try {
                     fs::remove_all(trashPath);
-                    PrintInfo(L"复制成功，已删除回收站副本");
+                    ctx.out->line(OutputLevel::Info, L"复制成功，已删除回收站副本");
                     restoreSuccess = true;
                 } catch (...) {
-                    PrintWarning(L"复制成功，但无法删除回收站副本，请手动清理: " + trashPath);
+                    ctx.out->line(OutputLevel::Warning, L"复制成功，但无法删除回收站副本，请手动清理: " + trashPath);
                     restoreSuccess = true;  // 内容已恢复，标记成功
                 }
             } else {
-                PrintError(L"xcopy 复制失败（退出码: " + std::to_wstring(exitCode) + L"），请手动恢复");
+                ctx.out->line(OutputLevel::Error, L"xcopy 复制失败（退出码: " + std::to_wstring(exitCode) + L"），请手动恢复");
                 return ExitCode::IoOrNetwork;
             }
         } else {
-            PrintError(L"无法启动 xcopy，请手动将目录从 " + trashPath + L" 复制到 " + originalPath);
+            ctx.out->line(OutputLevel::Error, L"无法启动 xcopy，请手动将目录从 " + trashPath + L" 复制到 " + originalPath);
             return ExitCode::IoOrNetwork;
         }
     }
@@ -213,12 +213,12 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
 
     // ----- 强制刷新缓存（重要！）-----
     if (restoreSuccess) {
-        PrintInfo(L"正在刷新 JDK 缓存...");
+        ctx.out->line(OutputLevel::Info, L"正在刷新 JDK 缓存...");
         auto jdks = ctx.scan->scanJdks(true, true);
-        PrintSuccess(L"版本 " + version + L" 已还原至 " + originalPath);
-        PrintWarning(L"请运行 'jmt search' 或 'jmt use' 重新配置环境变量（若需要）");
+        ctx.out->line(OutputLevel::Success, L"版本 " + version + L" 已还原至 " + originalPath);
+        ctx.out->line(OutputLevel::Warning, L"请运行 'jmt search' 或 'jmt use' 重新配置环境变量（若需要）");
     } else {
-        PrintError(L"还原失败，请检查权限或手动操作");
+        ctx.out->line(OutputLevel::Error, L"还原失败，请检查权限或手动操作");
         return ExitCode::IoOrNetwork;
     }
 

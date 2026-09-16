@@ -30,16 +30,13 @@ set(JMT_CORE_SOURCES
         src/jdk/java_env_service.cpp
         src/jdk/jdk_download_service.cpp
         src/jdk/jmt_path_service.cpp
-        src/system/registry_operator.cpp
         src/system/path_utils.cpp
         src/system/file_lock.cpp
-        src/system/elevation_helper.cpp
         src/system/utils.cpp
         src/common/string_helper.cpp
         src/platform/console_output.cpp
         src/platform/win_elevator.cpp
-        src/console/color_print.cpp
-        src/console/console_progress.cpp
+        src/platform/win_registry.cpp
         src/console/repl_engine.cpp
         src/console/repl_utils.cpp
         src/network/multi_thread_downloader.cpp

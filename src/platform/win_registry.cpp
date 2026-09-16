@@ -1,7 +1,18 @@
-#include "system/registry_operator.hpp"
-#include "console/color_print.hpp" // for debug
+#include "platform/win_registry.hpp"
+
 #include <vector>
 #include <thread>    // 用于 Sleep 或 std::this_thread::sleep_for，这里使用 Sleep
+
+namespace {
+
+// 调试日志：走 Win32 调试通道（仅 Debug 构建输出），避免适配器依赖应用的输出端口
+void debugLog(const std::wstring& message) {
+#ifdef _DEBUG
+    OutputDebugStringW((L"[DEBUG] " + message + L"\n").c_str());
+#endif
+}
+
+}  // namespace
 
 // ----- 新增：广播环境变更，带重试机制 -----
 static void BroadcastEnvironmentChange() {
@@ -20,7 +31,7 @@ static void BroadcastEnvironmentChange() {
 
     if (ret == 0) {
         // 若第一次失败（可能因某个窗口挂起超时），稍等后重试
-        PrintDebug(L"环境变更广播第一次尝试失败，等待 500ms 后重试...");
+        debugLog(L"环境变更广播第一次尝试失败，等待 500ms 后重试...");
         Sleep(500);
 
         ret = SendMessageTimeoutW(
@@ -35,17 +46,17 @@ static void BroadcastEnvironmentChange() {
 
         if (ret == 0) {
             // 两次均失败，记录但不影响功能（注册表已经写入成功）
-            PrintDebug(L"环境变更广播两次尝试均失败，可能部分窗口未响应");
+            debugLog(L"环境变更广播两次尝试均失败，可能部分窗口未响应");
         } else {
-            PrintDebug(L"环境变更广播重试成功");
+            debugLog(L"环境变更广播重试成功");
         }
     } else {
-        PrintDebug(L"环境变更广播成功");
+        debugLog(L"环境变更广播成功");
     }
 }
 // ----- 新增结束 -----
 
-HKEY RegistryOperator::getRootKey(EnvTarget target) {
+HKEY WinRegistry::getRootKey(EnvTarget target) {
     switch (target) {
         case EnvTarget::SystemOnly: return HKEY_LOCAL_MACHINE;
         case EnvTarget::UserOnly:   return HKEY_CURRENT_USER;
@@ -53,19 +64,19 @@ HKEY RegistryOperator::getRootKey(EnvTarget target) {
     }
 }
 
-bool RegistryOperator::openEnvKey(HKEY& hKey, HKEY root, bool writeAccess) {
+bool WinRegistry::openEnvKey(HKEY& hKey, HKEY root, bool writeAccess) {
     REGSAM access = writeAccess ? KEY_READ | KEY_WRITE : KEY_READ;
     LONG ret = RegOpenKeyExW(root, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", 0, access, &hKey);
     return (ret == ERROR_SUCCESS);
 }
 
-bool RegistryOperator::writeStringValue(HKEY hKey, const std::wstring& valueName, const std::wstring& data) {
+bool WinRegistry::writeStringValue(HKEY hKey, const std::wstring& valueName, const std::wstring& data) {
     LONG ret = RegSetValueExW(hKey, valueName.c_str(), 0, REG_EXPAND_SZ,
                               (const BYTE*)data.c_str(), (DWORD)((data.size() + 1) * sizeof(wchar_t)));
     return (ret == ERROR_SUCCESS);
 }
 
-bool RegistryOperator::readStringValue(HKEY hKey, const std::wstring& valueName, std::wstring& out) {
+bool WinRegistry::readStringValue(HKEY hKey, const std::wstring& valueName, std::wstring& out) {
     DWORD type = 0, size = 0;
     if (RegQueryValueExW(hKey, valueName.c_str(), nullptr, &type, nullptr, &size) != ERROR_SUCCESS)
         return false;
@@ -78,11 +89,11 @@ bool RegistryOperator::readStringValue(HKEY hKey, const std::wstring& valueName,
     return true;
 }
 
-bool RegistryOperator::deleteValue(HKEY hKey, const std::wstring& valueName) {
+bool WinRegistry::deleteValue(HKEY hKey, const std::wstring& valueName) {
     return (RegDeleteValueW(hKey, valueName.c_str()) == ERROR_SUCCESS);
 }
 
-bool RegistryOperator::writeEnvString(const std::wstring& key, const std::wstring& value, EnvTarget target) {
+bool WinRegistry::writeEnvString(const std::wstring& key, const std::wstring& value, EnvTarget target) {
     HKEY hKey;
     bool success = false;
     EnvTarget attempts[2] = { EnvTarget::SystemOnly, EnvTarget::UserOnly };
@@ -108,7 +119,7 @@ bool RegistryOperator::writeEnvString(const std::wstring& key, const std::wstrin
     return success;
 }
 
-std::wstring RegistryOperator::readEnvString(const std::wstring& key, EnvTarget target) {
+std::wstring WinRegistry::readEnvString(const std::wstring& key, EnvTarget target) {
     HKEY hKey;
     std::wstring out;
     EnvTarget attempts[2] = { EnvTarget::SystemOnly, EnvTarget::UserOnly };
@@ -128,7 +139,7 @@ std::wstring RegistryOperator::readEnvString(const std::wstring& key, EnvTarget 
     return L"";
 }
 
-bool RegistryOperator::deleteEnvString(const std::wstring& key, EnvTarget target) {
+bool WinRegistry::deleteEnvString(const std::wstring& key, EnvTarget target) {
     HKEY hKey;
     bool success = false;
     EnvTarget attempts[2] = { EnvTarget::SystemOnly, EnvTarget::UserOnly };
@@ -153,16 +164,16 @@ bool RegistryOperator::deleteEnvString(const std::wstring& key, EnvTarget target
     return success;
 }
 
-std::wstring RegistryOperator::getPath(EnvTarget target) {
+std::wstring WinRegistry::getPath(EnvTarget target) {
     return readEnvString(L"PATH", target);
 }
 
-bool RegistryOperator::setPath(const std::wstring& path, EnvTarget target) {
+bool WinRegistry::setPath(const std::wstring& path, EnvTarget target) {
     // setPath 内部调用 writeEnvString，writeEnvString 已包含广播，无需重复
     return writeEnvString(L"PATH", path, target);
 }
 
-std::vector<std::wstring> RegistryOperator::enumerateEnvValueNames(EnvTarget target) {
+std::vector<std::wstring> WinRegistry::enumerateEnvValueNames(EnvTarget target) {
     std::vector<std::wstring> result;
     HKEY hKey;
     HKEY root = getRootKey(target);
@@ -182,30 +193,27 @@ std::vector<std::wstring> RegistryOperator::enumerateEnvValueNames(EnvTarget tar
     return result;
 }
 
-// ============================================================
-// IRegistry 实现（过渡期：转发到既有静态实现，行为完全一致）
-// ============================================================
 
-std::wstring RegistryOperator::readEnv(const std::wstring& name, EnvTarget target) {
+std::wstring WinRegistry::readEnv(const std::wstring& name, EnvTarget target) {
     return readEnvString(name, target);
 }
 
-bool RegistryOperator::writeEnv(const std::wstring& name, const std::wstring& value, EnvTarget target) {
+bool WinRegistry::writeEnv(const std::wstring& name, const std::wstring& value, EnvTarget target) {
     return writeEnvString(name, value, target);
 }
 
-bool RegistryOperator::deleteEnv(const std::wstring& name, EnvTarget target) {
+bool WinRegistry::deleteEnv(const std::wstring& name, EnvTarget target) {
     return deleteEnvString(name, target);
 }
 
-std::vector<std::wstring> RegistryOperator::listEnvNames(EnvTarget target) {
+std::vector<std::wstring> WinRegistry::listEnvNames(EnvTarget target) {
     return enumerateEnvValueNames(target);
 }
 
-std::wstring RegistryOperator::readPath(EnvTarget target) {
+std::wstring WinRegistry::readPath(EnvTarget target) {
     return getPath(target);
 }
 
-bool RegistryOperator::writePath(const std::wstring& path, EnvTarget target) {
+bool WinRegistry::writePath(const std::wstring& path, EnvTarget target) {
     return setPath(path, target);
 }
