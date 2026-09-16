@@ -1,37 +1,57 @@
 #pragma once
+
+#include <map>
 #include <string>
 #include <vector>
-#include <map>
+
+#include "app/app_paths.hpp"
+#include "platform/output.hpp"
 
 class JdkDownloadService {
 public:
-    static std::wstring downloadAndInstall(const std::wstring& version,
-                                           const std::wstring& installRoot = L"");
-    static std::wstring downloadFromMirror(const std::wstring& version,
-                                           const std::wstring& installRoot = L"");
-    // 在 public 部分添加
-    static std::wstring downloadFromOfficial(const std::wstring& version,
-                                             const std::wstring& installRoot = L"");
+    JdkDownloadService(const AppPaths& paths, IOutput& out) : paths_(paths), out_(out) {}
 
-    // 重新加载外部映射文件
-    static void reloadMappings();
+    // 默认策略：镜像 ZIP → 镜像 EXE → 官方 ZIP；返回安装目录 / L"EXE_DOWNLOADED" / 空串
+    std::wstring downloadAndInstall(const std::wstring& version, const std::wstring& installRoot = L"");
+    // 仅镜像源：ZIP → EXE
+    std::wstring downloadFromMirror(const std::wstring& version, const std::wstring& installRoot = L"");
+    // 仅官方 Adoptium 源
+    std::wstring downloadFromOfficial(const std::wstring& version, const std::wstring& installRoot = L"");
+
+    // 重新加载内置 + 外部映射（启动时调用一次）
+    void reloadMappings();
 
 private:
     using UrlList = std::vector<std::wstring>;
-    static std::map<std::wstring, UrlList> zipMap_;
-    static std::map<std::wstring, UrlList> exeMap_;
 
-    // 加载内置映射
-    static void initBuiltinMappings();
-    // 加载外部 .repo 文件
-    static void loadExternalMappings();
-    // 确保外部映射文件存在（若不存在则从内置生成）
-    static void ensureExternalMappingFiles();
+    std::map<std::wstring, UrlList> zipMap_;
+    std::map<std::wstring, UrlList> exeMap_;
+    const AppPaths& paths_;
+    IOutput& out_;
 
-    // 查找某个版本的 zip URL（返回第一个可用的）
-    static std::wstring findZipUrl(const std::wstring& version);
-    // 查找某个版本的 exe URL
-    static std::wstring findExeUrl(const std::wstring& version);
-    // 判断 URL 是否为 demo 包
-    static bool isDemoPackage(const std::wstring& url);
+    // 目录与临时文件（此前散落在各处的 GetExeDirectory() + 字面量拼接）
+    std::wstring tempDirectory();
+    std::wstring repoDirectory();
+    std::wstring tempDownloadPath(const std::wstring& ext);
+
+    // 下载与解压
+    bool downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath);
+    bool downloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath);
+    bool downloadFile(const std::wstring& url, const std::wstring& destPath);
+    bool extractZip(const std::wstring& zipPath, const std::wstring& destDir);
+    bool isValidZipFile(const std::wstring& path);
+    bool fixNestedJdkDirectory(const std::wstring& targetDir);
+
+    // 映射管理
+    void initBuiltinMappings();
+    void loadExternalMappings();
+    void ensureExternalMappingFiles();
+    std::wstring findZipUrl(const std::wstring& version);
+    std::wstring findExeUrl(const std::wstring& version);
+    bool isDemoPackage(const std::wstring& url);
+
+    // 官方源（Adoptium API，手动解析 307 重定向）
+    bool officialDownloadInfo(const std::wstring& version,
+                              std::wstring& outFinalUrl,
+                              std::wstring& outFileName);
 };

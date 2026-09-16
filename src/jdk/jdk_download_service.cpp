@@ -10,7 +10,7 @@
 #include <winhttp.h>
 #include "jdk/jdk_download_service.hpp"
 #include "jdk/jdk_scan_service.hpp"
-#include "console/color_print.hpp"
+#include "platform/output.hpp"
 #include "system/utils.hpp"
 #include "network/multi_thread_downloader.hpp"
 #include <wininet.h>
@@ -29,21 +29,14 @@
 
 namespace fs = std::filesystem;
 
-// ---------- 静态成员定义 ----------
-std::map<std::wstring, JdkDownloadService::UrlList> JdkDownloadService::zipMap_;
-std::map<std::wstring, JdkDownloadService::UrlList> JdkDownloadService::exeMap_;
 
-// ---------- 前置声明 ----------
-bool IsValidZipFile(const std::wstring& path);
 
-// ---------- 辅助函数：获取 .temp 目录（与 exe 同级） ----------
-static std::wstring GetTempDir() {
-    std::wstring exeDir = GetExeDirectory();
-    std::wstring tempDir = JoinPath(exeDir, L".temp");
-    if (!IsDirectory(tempDir)) {
-        CreateDirectoryW(tempDir.c_str(), nullptr);
+// ---------- 辅助函数：获取 .temp 目录（路径来自 AppPaths） ----------
+std::wstring JdkDownloadService::tempDirectory() {
+    if (!IsDirectory(paths_.tempDir)) {
+        CreateDirectoryW(paths_.tempDir.c_str(), nullptr);
     }
-    return tempDir;
+    return paths_.tempDir;
 }
 
 // 从 URL 提取文件名（去掉查询参数）
@@ -59,7 +52,7 @@ static std::wstring ExtractFileNameFromUrl(const std::wstring& url) {
 }
 
 // 修复嵌套目录：若 targetDir 下只有一个子目录且该子目录是有效的 JDK，则将其内容上移并删除空目录
-static bool FixNestedJdkDirectory(const std::wstring& targetDir) {
+bool JdkDownloadService::fixNestedJdkDirectory(const std::wstring& targetDir) {
     std::vector<fs::path> subDirs;
     try {
         for (const auto& entry : fs::directory_iterator(targetDir)) {
@@ -68,18 +61,18 @@ static bool FixNestedJdkDirectory(const std::wstring& targetDir) {
             }
         }
     } catch (const std::exception& e) {
-        PrintDebug(L"FixNestedJdkDirectory: 遍历目录异常 " + ToWideString(e.what()));
+        out_.line(OutputLevel::Debug, L"FixNestedJdkDirectory: 遍历目录异常 " + ToWideString(e.what()));
         return false;
     }
 
     if (subDirs.size() != 1) {
-        PrintDebug(L"FixNestedJdkDirectory: 子目录数量不为1，实际=" + std::to_wstring(subDirs.size()));
+        out_.line(OutputLevel::Debug, L"FixNestedJdkDirectory: 子目录数量不为1，实际=" + std::to_wstring(subDirs.size()));
         return false;
     }
 
     fs::path subPath = subDirs[0];
     if (!JdkScanService::isValidJdk(subPath.wstring())) {
-        PrintDebug(L"FixNestedJdkDirectory: 子目录不是有效的 JDK");
+        out_.line(OutputLevel::Debug, L"FixNestedJdkDirectory: 子目录不是有效的 JDK");
         return false;
     }
 
@@ -93,22 +86,22 @@ static bool FixNestedJdkDirectory(const std::wstring& targetDir) {
             fs::rename(entry.path(), dest);
         }
         fs::remove(subPath);  // 删除空子目录
-        PrintDebug(L"FixNestedJdkDirectory: 移动成功");
+        out_.line(OutputLevel::Debug, L"FixNestedJdkDirectory: 移动成功");
         return true;
     } catch (const std::exception& e) {
-        PrintDebug(L"FixNestedJdkDirectory: 移动失败 " + ToWideString(e.what()));
+        out_.line(OutputLevel::Debug, L"FixNestedJdkDirectory: 移动失败 " + ToWideString(e.what()));
         return false;
     }
 }
 
 // ---------- 辅助函数：生成临时文件路径（在 .temp 下） ----------
-static std::wstring GetTempDownloadPath(const std::wstring& ext = L"tmp") {
-    std::wstring tempDir = GetTempDir();
+std::wstring JdkDownloadService::tempDownloadPath(const std::wstring& ext) {
+    std::wstring tempDir = tempDirectory();
     return JoinPath(tempDir, L"jmt_download." + ext);
 }
 
 // ---------- 辅助函数：使用 curl.exe 下载 ----------
-static bool DownloadFileWithCurl(const std::wstring& url, const std::wstring& destPath) {
+bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath) {
     std::wstring cleanUrl = url;
     cleanUrl.erase(std::remove_if(cleanUrl.begin(), cleanUrl.end(),
                                   [](wchar_t ch) { return ch <= 0x20; }), cleanUrl.end());
@@ -146,7 +139,7 @@ static bool DownloadFileWithCurl(const std::wstring& url, const std::wstring& de
 }
 
 // ---------- 辅助函数：多线程下载 ----------
-static bool DownloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath) {
+bool JdkDownloadService::downloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath) {
     std::wstring cleanUrl = url;
     cleanUrl.erase(std::remove_if(cleanUrl.begin(), cleanUrl.end(),
                                   [](wchar_t ch) { return ch <= 0x20; }), cleanUrl.end());
@@ -159,11 +152,11 @@ static bool DownloadFileWithMultiThread(const std::wstring& url, const std::wstr
     bool success = false;
     std::wstring errorMsg;
 
-    PrintInfo(L"使用多线程加速下载...");
+    out_.line(OutputLevel::Info, L"使用多线程加速下载...");
     success = downloader.download(cleanUrl, destPath,
-                                  [](const DownloadProgress& prog) {
+                                  [this](const DownloadProgress& prog) {
                                       if (prog.percent >= 0) {
-                                          PrintProgress(L"下载进度: " + std::to_wstring(prog.percent) + L"%");
+                                          out_.progress(L"下载进度: " + std::to_wstring(prog.percent) + L"%");
                                       }
                                   },
                                   [&](const std::wstring& err) {
@@ -172,49 +165,49 @@ static bool DownloadFileWithMultiThread(const std::wstring& url, const std::wstr
     );
 
     if (!success) {
-        PrintError(L"多线程下载失败: " + errorMsg);
+        out_.line(OutputLevel::Error, L"多线程下载失败: " + errorMsg);
         DeleteFileW(destPath.c_str());
         return false;
     }
 
     if (!IsFile(destPath)) {
-        PrintError(L"下载文件不存在");
+        out_.line(OutputLevel::Error, L"下载文件不存在");
         return false;
     }
 
     try {
         auto size = fs::file_size(destPath);
         if (size < 1024 * 1024) {
-            PrintWarning(L"文件大小异常（" + std::to_wstring(size / 1024) + L" KB），可能不是有效的 JDK 安装包");
+            out_.line(OutputLevel::Warning, L"文件大小异常（" + std::to_wstring(size / 1024) + L" KB），可能不是有效的 JDK 安装包");
             DeleteFileW(destPath.c_str());
             return false;
         }
         std::wstring ext = destPath.substr(destPath.find_last_of(L'.') + 1);
-        if (ext == L"zip" && !IsValidZipFile(destPath)) {
-            PrintWarning(L"下载的文件不是有效的 ZIP 文件");
+        if (ext == L"zip" && !isValidZipFile(destPath)) {
+            out_.line(OutputLevel::Warning, L"下载的文件不是有效的 ZIP 文件");
             DeleteFileW(destPath.c_str());
             return false;
         }
-        PrintInfo(L"下载完成，共 " + std::to_wstring(size / 1024) + L" KB");
+        out_.line(OutputLevel::Info, L"下载完成，共 " + std::to_wstring(size / 1024) + L" KB");
         return true;
     } catch (const std::exception&) {
-        PrintError(L"获取文件大小失败");
+        out_.line(OutputLevel::Error, L"获取文件大小失败");
         DeleteFileW(destPath.c_str());
         return false;
     }
 }
 
 // ---------- 统一的下载入口 ----------
-static bool DownloadFile(const std::wstring& url, const std::wstring& destPath) {
-    if (DownloadFileWithCurl(url, destPath)) {
+bool JdkDownloadService::downloadFile(const std::wstring& url, const std::wstring& destPath) {
+    if (downloadFileWithCurl(url, destPath)) {
         return true;
     }
-    PrintWarning(L"curl 下载失败，尝试多线程下载...");
-    return DownloadFileWithMultiThread(url, destPath);
+    out_.line(OutputLevel::Warning, L"curl 下载失败，尝试多线程下载...");
+    return downloadFileWithMultiThread(url, destPath);
 }
 
 // ---------- 解压 ZIP ----------
-static bool ExtractZip(const std::wstring& zipPath, const std::wstring& destDir) {
+bool JdkDownloadService::extractZip(const std::wstring& zipPath, const std::wstring& destDir) {
     // 确保目标目录存在
     CreateDirectoryW(destDir.c_str(), nullptr);
 
@@ -223,7 +216,7 @@ static bool ExtractZip(const std::wstring& zipPath, const std::wstring& destDir)
     PROCESS_INFORMATION pi;
     if (!CreateProcessW(nullptr, (LPWSTR)cmd.c_str(), nullptr, nullptr, FALSE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        PrintDebug(L"ExtractZip: CreateProcess 失败");
+        out_.line(OutputLevel::Debug, L"ExtractZip: CreateProcess 失败");
         return false;
     }
     WaitForSingleObject(pi.hProcess, INFINITE);
@@ -233,14 +226,14 @@ static bool ExtractZip(const std::wstring& zipPath, const std::wstring& destDir)
     CloseHandle(pi.hThread);
 
     if (exitCode != 0) {
-        PrintDebug(L"ExtractZip: PowerShell 退出码 " + std::to_wstring(exitCode));
+        out_.line(OutputLevel::Debug, L"ExtractZip: PowerShell 退出码 " + std::to_wstring(exitCode));
         return false;
     }
     return true;
 }
 
 // ---------- 校验 ZIP 文件头 ----------
-bool IsValidZipFile(const std::wstring& path) {
+bool JdkDownloadService::isValidZipFile(const std::wstring& path) {
     HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) return false;
@@ -257,13 +250,11 @@ bool IsValidZipFile(const std::wstring& path) {
 // ============================================================
 
 // ---------- 获取 .repo 目录 ----------
-static std::wstring GetRepoDir() {
-    std::wstring exeDir = GetExeDirectory();
-    std::wstring repoDir = JoinPath(exeDir, L".repo");
-    if (!IsDirectory(repoDir)) {
-        CreateDirectoryW(repoDir.c_str(), nullptr);
+std::wstring JdkDownloadService::repoDirectory() {
+    if (!IsDirectory(paths_.repoDir)) {
+        CreateDirectoryW(paths_.repoDir.c_str(), nullptr);
     }
-    return repoDir;
+    return paths_.repoDir;
 }
 
 // ---------- 解析文本文件（每行一个 URL） ----------
@@ -306,7 +297,7 @@ static std::wstring ExtractVersionFromUrl(const std::wstring& url) {
 
 // ---------- 加载外部映射文件 ----------
 void JdkDownloadService::loadExternalMappings() {
-    std::wstring repoDir = GetRepoDir();
+    std::wstring repoDir = repoDirectory();
 
     // 加载 zip 映射
     std::wstring zipFile = JoinPath(repoDir, L"jdk_zip_repo.txt");
@@ -475,7 +466,7 @@ static std::wstring GetInstallRoot() {
 }
 
 // ---------- 获取官方下载信息 ----------
-static bool GetOfficialDownloadInfo(const std::wstring& version, std::wstring& outFinalUrl, std::wstring& outFileName) {
+bool JdkDownloadService::officialDownloadInfo(const std::wstring& version, std::wstring& outFinalUrl, std::wstring& outFileName) {
     std::wstring apiUrl = L"https://api.adoptium.net/v3/binary/latest/" + version +
                           L"/ga/windows/x64/jdk/hotspot/normal/eclipse";
 
@@ -541,7 +532,7 @@ static bool GetOfficialDownloadInfo(const std::wstring& version, std::wstring& o
     }
 
     if (statusCode < 300 || statusCode >= 400) {
-        PrintDebug(L"GetOfficialDownloadInfo: 状态码非重定向 " + std::to_wstring(statusCode));
+        out_.line(OutputLevel::Debug, L"GetOfficialDownloadInfo: 状态码非重定向 " + std::to_wstring(statusCode));
         WinHttpCloseHandle(hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -598,43 +589,43 @@ std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version,
     std::wstring targetDir = JoinPath(root, L"jdk-" + version);
 
     if (IsDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-        PrintInfo(L"JDK " + version + L" 已安装在 " + targetDir);
+        out_.line(OutputLevel::Info, L"JDK " + version + L" 已安装在 " + targetDir);
         return targetDir;
     }
 
     // ---- 1. 查找 ZIP 源 ----
     std::wstring zipUrl = findZipUrl(version);
     if (!zipUrl.empty()) {
-        std::wstring tempFile = GetTempDownloadPath(L"zip");
-        PrintInfo(L"找到 ZIP 源: " + zipUrl);
+        std::wstring tempFile = tempDownloadPath(L"zip");
+        out_.line(OutputLevel::Info, L"找到 ZIP 源: " + zipUrl);
 
         if (isDemoPackage(zipUrl)) {
-            PrintWarning(L"⚠️ 检测到当前版本为 DEMO 包，仅包含示例代码和演示功能");
-            PrintInfo(L"如需完整 JDK，请尝试其他源或使用官方下载");
+            out_.line(OutputLevel::Warning, L"⚠️ 检测到当前版本为 DEMO 包，仅包含示例代码和演示功能");
+            out_.line(OutputLevel::Info, L"如需完整 JDK，请尝试其他源或使用官方下载");
         }
 
-        PrintInfo(L"正在下载 JDK " + version + L"（ZIP 格式）...");
-        if (DownloadFile(zipUrl, tempFile)) {
-            if (ExtractZip(tempFile, targetDir)) {
+        out_.line(OutputLevel::Info, L"正在下载 JDK " + version + L"（ZIP 格式）...");
+        if (downloadFile(zipUrl, tempFile)) {
+            if (extractZip(tempFile, targetDir)) {
                 DeleteFileW(tempFile.c_str());
 
                 // 先尝试修复嵌套目录
                 if (JdkScanService::isValidJdk(targetDir)) {
-                    PrintSuccess(L"JDK " + version + L" 安装成功");
+                    out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功");
                     return targetDir;
-                } else if (FixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-                    PrintSuccess(L"JDK " + version + L" 安装成功（修复嵌套结构）");
+                } else if (fixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
+                    out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（修复嵌套结构）");
                     return targetDir;
                 } else {
-                    PrintWarning(L"解压后不是有效的 JDK，尝试其他源...");
+                    out_.line(OutputLevel::Warning, L"解压后不是有效的 JDK，尝试其他源...");
                     fs::remove_all(targetDir);
                 }
             } else {
-                PrintWarning(L"解压失败，尝试其他源...");
+                out_.line(OutputLevel::Warning, L"解压失败，尝试其他源...");
                 DeleteFileW(tempFile.c_str());
             }
         } else {
-            PrintWarning(L"ZIP 源下载失败，尝试其他源...");
+            out_.line(OutputLevel::Warning, L"ZIP 源下载失败，尝试其他源...");
         }
     }
 
@@ -643,35 +634,35 @@ std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version,
     if (!exeUrl.empty()) {
         std::wstring fileName = ExtractFileNameFromUrl(exeUrl);
         if (fileName.empty()) fileName = L"jmt_download.exe";
-        std::wstring tempFile = JoinPath(GetTempDir(), fileName);
-        PrintInfo(L"找到 EXE 源: " + exeUrl);
-        PrintWarning(L"未找到可自动安装的 ZIP 包，将下载 EXE 安装程序到 .temp 目录");
-        PrintInfo(L"正在下载 EXE 安装程序...");
-        if (DownloadFile(exeUrl, tempFile)) {
-            PrintInfo(L"EXE 文件已保存到: " + tempFile);
-            PrintWarning(L"请手动运行此 EXE 安装 JDK " + version + L"，然后运行 'jmt search' 刷新缓存");
-            PrintInfo(L"建议安装路径: " + targetDir);
+        std::wstring tempFile = JoinPath(tempDirectory(), fileName);
+        out_.line(OutputLevel::Info, L"找到 EXE 源: " + exeUrl);
+        out_.line(OutputLevel::Warning, L"未找到可自动安装的 ZIP 包，将下载 EXE 安装程序到 .temp 目录");
+        out_.line(OutputLevel::Info, L"正在下载 EXE 安装程序...");
+        if (downloadFile(exeUrl, tempFile)) {
+            out_.line(OutputLevel::Info, L"EXE 文件已保存到: " + tempFile);
+            out_.line(OutputLevel::Warning, L"请手动运行此 EXE 安装 JDK " + version + L"，然后运行 'jmt search' 刷新缓存");
+            out_.line(OutputLevel::Info, L"建议安装路径: " + targetDir);
             return L"EXE_DOWNLOADED";
         } else {
-            PrintWarning(L"EXE 源下载失败，尝试官方源...");
+            out_.line(OutputLevel::Warning, L"EXE 源下载失败，尝试官方源...");
         }
     }
 
     // ---- 3. 回退到官方源（Adoptium） ----
     std::wstring officialUrl, fileName;
-    if (!GetOfficialDownloadInfo(version, officialUrl, fileName) || fileName.empty()) {
-        PrintError(L"无法获取官方下载信息，请检查网络或版本号是否正确");
+    if (!officialDownloadInfo(version, officialUrl, fileName) || fileName.empty()) {
+        out_.line(OutputLevel::Error, L"无法获取官方下载信息，请检查网络或版本号是否正确");
         return L"";
     }
-    std::wstring tempFile = GetTempDownloadPath(L"zip");
-    PrintInfo(L"正在从官方源下载 JDK " + version + L" ...");
-    if (!DownloadFile(officialUrl, tempFile)) {
-        PrintError(L"官方源下载失败");
+    std::wstring tempFile = tempDownloadPath(L"zip");
+    out_.line(OutputLevel::Info, L"正在从官方源下载 JDK " + version + L" ...");
+    if (!downloadFile(officialUrl, tempFile)) {
+        out_.line(OutputLevel::Error, L"官方源下载失败");
         DeleteFileW(tempFile.c_str());
         return L"";
     }
-    if (!ExtractZip(tempFile, targetDir)) {
-        PrintError(L"解压失败");
+    if (!extractZip(tempFile, targetDir)) {
+        out_.line(OutputLevel::Error, L"解压失败");
         DeleteFileW(tempFile.c_str());
         return L"";
     }
@@ -679,13 +670,13 @@ std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version,
 
     // 同样处理官方源下载的 ZIP 嵌套问题
     if (JdkScanService::isValidJdk(targetDir)) {
-        PrintSuccess(L"JDK " + version + L" 安装成功（官方源）");
+        out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（官方源）");
         return targetDir;
-    } else if (FixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-        PrintSuccess(L"JDK " + version + L" 安装成功（官方源，修复嵌套）");
+    } else if (fixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
+        out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（官方源，修复嵌套）");
         return targetDir;
     } else {
-        PrintError(L"官方源解压后仍不是有效的 JDK，请手动处理");
+        out_.line(OutputLevel::Error, L"官方源解压后仍不是有效的 JDK，请手动处理");
         fs::remove_all(targetDir);
         return L"";
     }
@@ -697,25 +688,25 @@ std::wstring JdkDownloadService::downloadFromMirror(const std::wstring& version,
     std::wstring targetDir = JoinPath(root, L"jdk-" + version);
 
     if (IsDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-        PrintInfo(L"JDK " + version + L" 已安装在 " + targetDir);
+        out_.line(OutputLevel::Info, L"JDK " + version + L" 已安装在 " + targetDir);
         return targetDir;
     }
 
     // 优先 ZIP
     std::wstring zipUrl = findZipUrl(version);
     if (!zipUrl.empty()) {
-        std::wstring tempFile = GetTempDownloadPath(L"zip");
+        std::wstring tempFile = tempDownloadPath(L"zip");
         if (isDemoPackage(zipUrl)) {
-            PrintWarning(L"⚠️ 此版本为 DEMO 包，仅包含示例代码");
+            out_.line(OutputLevel::Warning, L"⚠️ 此版本为 DEMO 包，仅包含示例代码");
         }
-        PrintInfo(L"正在从镜像下载 ZIP...");
-        if (DownloadFile(zipUrl, tempFile) && ExtractZip(tempFile, targetDir)) {
+        out_.line(OutputLevel::Info, L"正在从镜像下载 ZIP...");
+        if (downloadFile(zipUrl, tempFile) && extractZip(tempFile, targetDir)) {
             DeleteFileW(tempFile.c_str());
             if (JdkScanService::isValidJdk(targetDir)) {
-                PrintSuccess(L"JDK " + version + L" 安装成功（镜像）");
+                out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（镜像）");
                 return targetDir;
-            } else if (FixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-                PrintSuccess(L"JDK " + version + L" 安装成功（镜像，修复嵌套）");
+            } else if (fixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
+                out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（镜像，修复嵌套）");
                 return targetDir;
             }
         }
@@ -727,32 +718,32 @@ std::wstring JdkDownloadService::downloadFromMirror(const std::wstring& version,
     if (!exeUrl.empty()) {
         std::wstring fileName = ExtractFileNameFromUrl(exeUrl);
         if (fileName.empty()) fileName = L"jmt_download.exe";
-        std::wstring tempFile = JoinPath(GetTempDir(), fileName);
-        PrintInfo(L"未找到 ZIP，下载 EXE 到 .temp...");
-        if (DownloadFile(exeUrl, tempFile)) {
-            PrintInfo(L"EXE 已保存到: " + tempFile);
-            PrintWarning(L"请手动安装并运行 'jmt search'");
+        std::wstring tempFile = JoinPath(tempDirectory(), fileName);
+        out_.line(OutputLevel::Info, L"未找到 ZIP，下载 EXE 到 .temp...");
+        if (downloadFile(exeUrl, tempFile)) {
+            out_.line(OutputLevel::Info, L"EXE 已保存到: " + tempFile);
+            out_.line(OutputLevel::Warning, L"请手动安装并运行 'jmt search'");
             return L"EXE_DOWNLOADED";
         }
     }
 
-    PrintError(L"镜像源中未找到版本 " + version + L" 的可用资源");
+    out_.line(OutputLevel::Error, L"镜像源中未找到版本 " + version + L" 的可用资源");
     return L"";
 }
 
 void JdkDownloadService::ensureExternalMappingFiles() {
-    std::wstring repoDir = GetRepoDir();   // 返回 exeDir/.repo
+    std::wstring repoDir = repoDirectory();   // 返回 exeDir/.repo
 
     // 创建 .repo 目录（如果不存在）
     if (!IsDirectory(repoDir)) {
         if (!CreateDirectoryW(repoDir.c_str(), nullptr)) {
-            PrintDebug(L"无法创建 .repo 目录: " + repoDir);
+            out_.line(OutputLevel::Debug, L"无法创建 .repo 目录: " + repoDir);
             return;
         }
     }
 
     // 检测文件是否为 UTF-16 LE 编码（老版本遗留问题），是则删除重建
-    auto checkAndFixEncoding = [](const std::wstring& path) {
+    auto checkAndFixEncoding = [this](const std::wstring& path) {
         if (!IsFile(path)) return;
         HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -764,7 +755,7 @@ void JdkDownloadService::ensureExternalMappingFiles() {
                 CloseHandle(hFile);
                 hFile = INVALID_HANDLE_VALUE;
                 DeleteFileW(path.c_str());
-                PrintDebug(L"检测到 UTF-16 LE 编码，已删除并准备重建: " + path);
+                out_.line(OutputLevel::Debug, L"检测到 UTF-16 LE 编码，已删除并准备重建: " + path);
                 return;
             }
         }
@@ -789,9 +780,9 @@ void JdkDownloadService::ensureExternalMappingFiles() {
         }
 
         if (!WriteFileText(zipFilePath, content)) {
-            PrintDebug(L"写入 ZIP 映射文件失败: " + zipFilePath);
+            out_.line(OutputLevel::Debug, L"写入 ZIP 映射文件失败: " + zipFilePath);
         } else {
-            PrintDebug(L"已生成 ZIP 映射文件: " + zipFilePath);
+            out_.line(OutputLevel::Debug, L"已生成 ZIP 映射文件: " + zipFilePath);
         }
     }
 
@@ -813,9 +804,9 @@ void JdkDownloadService::ensureExternalMappingFiles() {
         }
 
         if (!WriteFileText(exeFilePath, content)) {
-            PrintDebug(L"写入 EXE 映射文件失败: " + exeFilePath);
+            out_.line(OutputLevel::Debug, L"写入 EXE 映射文件失败: " + exeFilePath);
         } else {
-            PrintDebug(L"已生成 EXE 映射文件: " + exeFilePath);
+            out_.line(OutputLevel::Debug, L"已生成 EXE 映射文件: " + exeFilePath);
         }
     }
 }
@@ -826,33 +817,33 @@ std::wstring JdkDownloadService::downloadFromOfficial(const std::wstring& versio
     std::wstring targetDir = JoinPath(root, L"jdk-" + version);
 
     if (IsDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-        PrintInfo(L"JDK " + version + L" 已安装在 " + targetDir);
+        out_.line(OutputLevel::Info, L"JDK " + version + L" 已安装在 " + targetDir);
         return targetDir;
     }
 
     // 获取官方下载信息
     std::wstring officialUrl, fileName;
-    if (!GetOfficialDownloadInfo(version, officialUrl, fileName) || fileName.empty()) {
-        PrintError(L"无法获取官方下载信息，请检查网络或版本号是否正确");
+    if (!officialDownloadInfo(version, officialUrl, fileName) || fileName.empty()) {
+        out_.line(OutputLevel::Error, L"无法获取官方下载信息，请检查网络或版本号是否正确");
         return L"";
     }
 
     // 下载到 .temp 目录（使用原始文件名或通用名）
-    std::wstring tempFile = JoinPath(GetTempDir(), fileName);
+    std::wstring tempFile = JoinPath(tempDirectory(), fileName);
     if (tempFile.empty() || tempFile.find(L".zip") == std::wstring::npos) {
         // 如果文件名不是 .zip，补充后缀
-        tempFile = GetTempDownloadPath(L"zip");
+        tempFile = tempDownloadPath(L"zip");
     }
 
-    PrintInfo(L"正在从官方源下载 JDK " + version + L" ...");
-    if (!DownloadFile(officialUrl, tempFile)) {
-        PrintError(L"官方源下载失败");
+    out_.line(OutputLevel::Info, L"正在从官方源下载 JDK " + version + L" ...");
+    if (!downloadFile(officialUrl, tempFile)) {
+        out_.line(OutputLevel::Error, L"官方源下载失败");
         DeleteFileW(tempFile.c_str());
         return L"";
     }
 
-    if (!ExtractZip(tempFile, targetDir)) {
-        PrintError(L"解压失败");
+    if (!extractZip(tempFile, targetDir)) {
+        out_.line(OutputLevel::Error, L"解压失败");
         DeleteFileW(tempFile.c_str());
         return L"";
     }
@@ -860,13 +851,13 @@ std::wstring JdkDownloadService::downloadFromOfficial(const std::wstring& versio
 
     // 检查是否为有效 JDK，若不是则尝试修复嵌套目录
     if (JdkScanService::isValidJdk(targetDir)) {
-        PrintSuccess(L"JDK " + version + L" 安装成功（官方源）");
+        out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（官方源）");
         return targetDir;
-    } else if (FixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-        PrintSuccess(L"JDK " + version + L" 安装成功（官方源，修复嵌套）");
+    } else if (fixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
+        out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（官方源，修复嵌套）");
         return targetDir;
     } else {
-        PrintError(L"官方源解压后不是有效的 JDK，请手动处理");
+        out_.line(OutputLevel::Error, L"官方源解压后不是有效的 JDK，请手动处理");
         fs::remove_all(targetDir);
         return L"";
     }

@@ -19,6 +19,7 @@ struct AppContext {
     IElevator* elevator = nullptr;
     JdkScanService* scan = nullptr;
     JavaEnvService* env = nullptr;
+    JdkDownloadService* download = nullptr;
     JmtPathService* jmtPath = nullptr;
     bool isInteractive = false;
     bool isElevated = false;

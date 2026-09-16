@@ -24,12 +24,12 @@ int wmain(int argc, wchar_t* argv[]) {
     // 初始化控制台
     InitConsole();
 
-    // ---------- 初始化资源映射 ----------
-    JdkDownloadService::reloadMappings();
-
     // 组合根：装配 Win32 适配器与服务实例
     AppRuntime runtime(AppPaths::fromExecutable(), argc == 1);
     AppContext& ctx = runtime.context();
+
+    // ---------- 初始化资源映射 ----------
+    runtime.download().reloadMappings();
 
     // 构建命令注册表
     CommandRegistry registry;

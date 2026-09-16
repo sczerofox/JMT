@@ -144,7 +144,7 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
             }
 
             PrintInfo(L"正在安装 JDK " + ver + L" ...");
-            std::wstring result = JdkDownloadService::downloadAndInstall(ver, installRoot);
+            std::wstring result = ctx.download->downloadAndInstall(ver, installRoot);
 
             if (result == L"EXE_DOWNLOADED") {
                 PrintWarning(L"JDK " + ver + L" 安装程序已下载到 .temp 目录，请手动完成安装");

@@ -173,12 +173,12 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
 
     if (forceOfficial) {
         // 强制从官方下载（绕过镜像和 EXE）
-        installPath = JdkDownloadService::downloadFromOfficial(majorVersion);
+        installPath = ctx.download->downloadFromOfficial(majorVersion);
     } else if (useMirror) {
-        installPath = JdkDownloadService::downloadFromMirror(majorVersion);
+        installPath = ctx.download->downloadFromMirror(majorVersion);
     } else {
         // 默认：尝试镜像 ZIP，失败则回退官方 ZIP
-        installPath = JdkDownloadService::downloadAndInstall(majorVersion);
+        installPath = ctx.download->downloadAndInstall(majorVersion);
     }
 
     if (installPath == L"EXE_DOWNLOADED") {

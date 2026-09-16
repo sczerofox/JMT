@@ -3,6 +3,7 @@
 #include "app/app_context.hpp"
 #include "app/app_paths.hpp"
 #include "jdk/java_env_service.hpp"
+#include "jdk/jdk_download_service.hpp"
 #include "jdk/jdk_scan_service.hpp"
 #include "jdk/jmt_path_service.hpp"
 #include "platform/elevator.hpp"
@@ -17,6 +18,7 @@ public:
 
     [[nodiscard]] AppContext& context() { return ctx_; }
     [[nodiscard]] IOutput& output() { return output_; }
+    [[nodiscard]] JdkDownloadService& download() { return download_; }
 
 private:
     ConsoleOutput output_;
@@ -25,5 +27,6 @@ private:
     AppContext ctx_;          // 先建上下文：服务会引用 ctx_.paths
     JdkScanService scan_;
     JavaEnvService env_;
+    JdkDownloadService download_;
     JmtPathService jmtPath_;
 };
