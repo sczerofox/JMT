@@ -3,14 +3,16 @@
 #include "jdk/java_env_service.hpp"
 #include "platform/output.hpp"
 #include "app/elevation_gate.hpp"
+#include "app/env_scope.hpp"
 
 ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
+    const EnvScope scope = EnvScope::parse(args);
 
-    if (args.size() < 2) {
-        ctx.out->line(OutputLevel::Error, L"缺少版本号，用法: use <version>");
+    if (scope.args.size() < 2) {
+        ctx.out->line(OutputLevel::Error, L"缺少版本号，用法: use <version> [--user|--sys]");
         return ExitCode::BadArgs;
     }
-    const std::wstring& ver = args[1];
+    const std::wstring& ver = scope.args[1];
 
     auto jdks = ctx.scan->scanJdks(false, true);
     bool found = false;
@@ -27,7 +29,7 @@ ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& 
         return ExitCode::NotFound;
     }
 
-    if (!ctx.env->setCurrentJdk(targetPath, EnvTarget::Auto)) {
+    if (!ctx.env->setCurrentJdk(targetPath, scope.target)) {
         ctx.out->line(OutputLevel::Error, L"切换失败，请确保有管理员权限");
         return ExitCode::PermissionDenied;
     }

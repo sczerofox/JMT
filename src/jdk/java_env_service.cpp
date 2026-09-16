@@ -96,9 +96,11 @@ bool JavaEnvService::clearCurrentJdk(EnvTarget target) {
     return true;
 }
 
-std::wstring JavaEnvService::getCurrentVersion() {
-    std::wstring path = registry_.readPath(EnvTarget::Auto);
-    auto entries = PathUtils::splitPath(path);
+namespace {
+
+// 在一段 PATH 里找第一个 JMT 管理的 JDK bin 条目并提取版本号
+std::wstring firstJdkVersionIn(const std::wstring& path) {
+    const auto entries = PathUtils::splitPath(path);
     for (const auto& e : entries) {
         if (IsJdkBinPath(e)) {
             // 从路径中提取版本号：
@@ -112,6 +114,19 @@ std::wstring JavaEnvService::getCurrentVersion() {
                 else if (match[2].matched)
                     return match[2].str();  // jdk-17 / jdk17 -> "17"
             }
+        }
+    }
+    return L"";
+}
+
+}  // namespace
+
+std::wstring JavaEnvService::getCurrentVersion() {
+    // Windows 上用户 PATH 优先于系统 PATH 生效，因此先看用户级再回退系统级
+    for (EnvTarget scope : {EnvTarget::UserOnly, EnvTarget::SystemOnly}) {
+        const std::wstring version = firstJdkVersionIn(registry_.readPath(scope));
+        if (!version.empty()) {
+            return version;
         }
     }
     return L"";

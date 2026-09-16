@@ -7,6 +7,7 @@
 #include "platform/output.hpp"
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
+#include "app/env_scope.hpp"
 #include <regex>
 #include <filesystem>
 #include <conio.h>
@@ -43,10 +44,11 @@ static bool MoveToTrash(const std::wstring& jdkPath, const std::wstring& version
 }
 
 ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
+    const EnvScope scope = EnvScope::parse(args);
     // ----- 提权 -----
 
     // ----- 参数检查 -----
-    if (args.size() < 2) {
+    if (scope.args.size() < 2) {
         ctx.out->line(OutputLevel::Error, L"请指定版本号，如 download 21");
         ctx.out->line(OutputLevel::Info, L"可选参数: --mirror  (使用内置镜像加速下载)");
         ctx.out->line(OutputLevel::Info, L"          exe     (强制下载 EXE 安装程序到 .temp，不自动安装)");
@@ -58,16 +60,16 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     bool useMirror = false;
     bool forceOfficial = false;   // ← 新增标志
     std::wstring versionArg;
-    for (size_t i = 1; i < args.size(); ++i) {
-        if (args[i] == L"--mirror") {
+    for (size_t i = 1; i < scope.args.size(); ++i) {
+        if (scope.args[i] == L"--mirror") {
             useMirror = true;
-        } else if (args[i] == L"exe") {
+        } else if (scope.args[i] == L"exe") {
             // 兼容旧参数：exe 当前与默认策略等价（见开发文档 10.4），此处仅做识别、跳过
-        } else if (args[i] == L"java") {   // ← 识别 java 参数
+        } else if (scope.args[i] == L"java") {
             forceOfficial = true;
         } else {
             if (versionArg.empty()) {
-                versionArg = args[i];
+                versionArg = scope.args[i];
             }
         }
     }
@@ -133,7 +135,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
             ctx.out->line(OutputLevel::Info, L"当前 PATH 正使用该版本，正在切换到最大版本...");
             if (newJdks.empty()) {
                 // 无其他版本，清除 PATH 中的 JDK 路径
-                if (!ctx.env->clearCurrentJdk(EnvTarget::Auto)) {
+                if (!ctx.env->clearCurrentJdk(scope.target)) {
                     ctx.out->line(OutputLevel::Error, L"清除当前 JDK PATH 失败");
                     return ExitCode::PermissionDenied;
                 }
@@ -143,7 +145,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
                                               [](const auto& a, const auto& b) {
                                                   return std::stoi(a.first) < std::stoi(b.first);
                                               });
-                if (!ctx.env->setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
+                if (!ctx.env->setCurrentJdk(maxIt->second, scope.target)) {
                     ctx.out->line(OutputLevel::Error, L"切换到最大版本失败");
                     return ExitCode::PermissionDenied;
                 }
@@ -152,7 +154,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
         } else {
             // 当前 PATH 不是该版本，但为了安全，从 PATH 中删除该版本的 bin 路径（如果存在）
             std::wstring binPath = JoinPath(existingPath, L"bin");
-            std::wstring path = ctx.registry->readPath(EnvTarget::Auto);
+            std::wstring path = ctx.registry->readPath(scope.target);
             auto entries = PathUtils::splitPath(path);
             entries = PathUtils::removeEntries(entries, binPath);
             std::wstring newPath;
@@ -160,11 +162,11 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
                 if (i > 0) newPath += L';';
                 newPath += entries[i];
             }
-            ctx.registry->writePath(newPath, EnvTarget::Auto);
+            ctx.registry->writePath(newPath, scope.target);
         }
 
         // 删除任何残留的 JAVA_HOME<version> 变量（向后兼容）
-        ctx.registry->deleteEnv(L"JAVA_HOME" + majorVersion, EnvTarget::Auto);
+        ctx.registry->deleteEnv(L"JAVA_HOME" + majorVersion, scope.target);
         ctx.out->line(OutputLevel::Info, L"旧版本环境变量已清理");
     }
 
@@ -197,7 +199,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     bool foundNew = false;
     for (const auto& [v, p] : updatedJdks) {
         if (p == installPath || v == majorVersion) { // 若路径匹配或版本匹配
-            if (!ctx.env->setCurrentJdk(p, EnvTarget::Auto)) {
+            if (!ctx.env->setCurrentJdk(p, scope.target)) {
                 ctx.out->line(OutputLevel::Error, L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + v + L"'");
                 return ExitCode::PermissionDenied;
             }
@@ -212,7 +214,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
                                       [](const auto& a, const auto& b) {
                                           return std::stoi(a.first) < std::stoi(b.first);
                                       });
-        if (!ctx.env->setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
+        if (!ctx.env->setCurrentJdk(maxIt->second, scope.target)) {
             ctx.out->line(OutputLevel::Error, L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + maxIt->first + L"'");
             return ExitCode::PermissionDenied;
         }

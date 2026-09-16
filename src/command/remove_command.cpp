@@ -6,6 +6,7 @@
 #include "platform/output.hpp"
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
+#include "app/env_scope.hpp"
 #include <algorithm>
 #include <cctype>
 #include <conio.h>
@@ -15,18 +16,10 @@
 namespace fs = std::filesystem;
 
 ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
-    // 解析 --user / --sys
-    EnvTarget target = EnvTarget::Auto;
-    std::vector<std::wstring> filteredArgs;
-    for (const auto& arg : args) {
-        if (arg == L"--user") { target = EnvTarget::UserOnly; }
-        else if (arg == L"--sys") { target = EnvTarget::SystemOnly; }
-        else {
-            filteredArgs.push_back(arg);
-        }
-    }
-
-    // 提权检查
+    // 解析 --user / --sys（提权已由 main / REPL 按命令元数据统一处理）
+    const EnvScope scope = EnvScope::parse(args);
+    const EnvTarget target = scope.target;
+    const std::vector<std::wstring>& filteredArgs = scope.args;
 
     // 检查是否有子命令
     if (filteredArgs.size() < 2) {
@@ -54,8 +47,10 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
             if (i > 0) newPath += L';';
             newPath += entries[i];
         }
-        ctx.registry->writePath(newPath, target);
-
+        if (!ctx.registry->writePath(newPath, target)) {
+            ctx.out->line(OutputLevel::Error, L"写入 PATH 失败，JMT 自身目录未被移除");
+            return ExitCode::PermissionDenied;
+        }
         ctx.out->line(OutputLevel::Success, L"JMT 自身目录已从 PATH 中移除");
         return ExitCode::Ok;
     }
@@ -77,9 +72,12 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
 
         ctx.out->line(OutputLevel::Info, L"正在完全清理所有 JMT 配置...");
 
+        bool pathCleanupOk = true;
+
         // 1. 清除当前 JDK（删除 PATH 条目，恢复 Oracle javapath）
         if (!ctx.env->clearCurrentJdk(target)) {
             ctx.out->line(OutputLevel::Error, L"清除当前 JDK PATH 失败");
+            pathCleanupOk = false;
         } else {
             ctx.out->line(OutputLevel::Info, L"已清除当前 JDK PATH，已恢复 Oracle javapath");
         }
@@ -94,8 +92,12 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
                 if (i > 0) newPath += L';';
                 newPath += entries[i];
             }
-            ctx.registry->writePath(newPath, target);
-            ctx.out->line(OutputLevel::Info, L"已从 PATH 中移除 JMT 自身目录");
+            if (!ctx.registry->writePath(newPath, target)) {
+                ctx.out->line(OutputLevel::Error, L"写入 PATH 失败，JMT 自身目录未被移除");
+                pathCleanupOk = false;
+            } else {
+                ctx.out->line(OutputLevel::Info, L"已从 PATH 中移除 JMT 自身目录");
+            }
         }
 
         // 3. 删除 .trash 回收站
@@ -147,6 +149,10 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
             ctx.out->line(OutputLevel::Info, L"已清理 JAVA_HOME 环境变量");
         }
 
+        if (!pathCleanupOk) {
+            ctx.out->line(OutputLevel::Error, L"PATH 清理未全部完成，请检查权限或改用 --user / --sys 指定目标");
+            return ExitCode::PermissionDenied;
+        }
         ctx.out->line(OutputLevel::Success, L"完全清理完成");
         return ExitCode::Ok;
     }
