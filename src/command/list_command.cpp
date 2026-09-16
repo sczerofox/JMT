@@ -1,7 +1,7 @@
-#include "list_command.hpp"
-#include "../service/jdk_scan_service.hpp"
-#include "../service/java_env_service.hpp"
-#include "../print/color_print.hpp"
+#include "command/list_command.hpp"
+#include "jdk/jdk_scan_service.hpp"
+#include "jdk/java_env_service.hpp"
+#include "console/color_print.hpp"
 
 int ListCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
     auto jdks = JdkScanService::scanJdks(false, ctx.cacheFilePath, true);

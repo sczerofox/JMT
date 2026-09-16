@@ -1,8 +1,8 @@
-#include "rollback_command.hpp"
-#include "../service/jdk_scan_service.hpp"
-#include "../print/color_print.hpp"
-#include "../utils/utils.hpp"
-#include "../infrastructure/elevation_helper.hpp"
+#include "command/rollback_command.hpp"
+#include "jdk/jdk_scan_service.hpp"
+#include "console/color_print.hpp"
+#include "system/utils.hpp"
+#include "system/elevation_helper.hpp"
 #include <windows.h>
 #include <filesystem>
 #include <regex>

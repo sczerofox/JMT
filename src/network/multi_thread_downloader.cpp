@@ -1,12 +1,10 @@
 #define NOMINMAX
-#include "multi_thread_downloader.hpp"
+#include "network/multi_thread_downloader.hpp"
 #include <windows.h>
 #include <winhttp.h>
 #include <mutex>
 #include <thread>
 #include <fstream>
-#include <algorithm>
-#include <cstdlib>
 #include <random>
 #include <chrono>
 
@@ -45,10 +43,6 @@ void MultiThreadDownloader::setTimeout(int seconds) {
 void MultiThreadDownloader::setRetryCount(int count) {
     if (count < 0) count = 0;
     maxRetries_ = count;
-}
-
-void MultiThreadDownloader::cancel() {
-    cancelled_ = true;
 }
 
 bool MultiThreadDownloader::getFileSize(const std::wstring& url, int64_t& outSize) {
@@ -91,68 +85,6 @@ bool MultiThreadDownloader::getFileSize(const std::wstring& url, int64_t& outSiz
         return true;
     }
     return false;
-}
-
-bool MultiThreadDownloader::httpGetRange(const std::wstring& url, int64_t start, int64_t end,
-                                         std::vector<unsigned char>& outBuffer, int64_t& outBytesRead) {
-    outBuffer.clear();
-    outBytesRead = 0;
-
-    HINTERNET hSession = WinHttpOpen(L"JMT/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) return false;
-
-    HINTERNET hConnect = WinHttpOpenRequest(hSession, L"GET", url.c_str(), nullptr,
-                                            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                            WINHTTP_FLAG_REFRESH);
-    if (!hConnect) {
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    DWORD timeout = timeoutSeconds_ * 1000;
-    WinHttpSetOption(hConnect, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-    WinHttpSetOption(hConnect, WINHTTP_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
-
-    std::wstring headers;
-    if (end > 0) {
-        wchar_t rangeHeader[256];
-        swprintf_s(rangeHeader, L"Range: bytes=%lld-%lld", start, end);
-        headers = rangeHeader;
-        headers += L"\r\n";
-    }
-
-    if (!WinHttpSendRequest(hConnect,
-                            headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str(),
-                            headers.empty() ? 0 : (DWORD)headers.size(),
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(hConnect, nullptr)) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    std::vector<unsigned char> allData;
-    unsigned char buffer[8192];
-    DWORD bytesRead = 0;
-
-    while (true) {
-        if (cancelled_) {
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return false;
-        }
-        if (!WinHttpReadData(hConnect, buffer, sizeof(buffer), &bytesRead)) break;
-        if (bytesRead == 0) break;
-        allData.insert(allData.end(), buffer, buffer + bytesRead);
-    }
-
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-
-    outBuffer = std::move(allData);
-    outBytesRead = static_cast<int64_t>(outBuffer.size());
-    return true;
 }
 
 bool MultiThreadDownloader::downloadPart(const std::wstring& url, const PartInfo& part,
@@ -288,8 +220,6 @@ bool MultiThreadDownloader::download(const std::wstring& url,
                 part.end = (i + 1) * partSize - 1;
             }
             part.tempFile = GetTempFilePath(i);
-            part.completed = false;
-            part.retryCount = 0;
             parts.push_back(part);
         }
     } else {
@@ -298,8 +228,6 @@ bool MultiThreadDownloader::download(const std::wstring& url,
         part.start = 0;
         part.end = -1;
         part.tempFile = GetTempFilePath(0);
-        part.completed = false;
-        part.retryCount = 0;
         parts.push_back(part);
     }
 
@@ -327,13 +255,11 @@ bool MultiThreadDownloader::download(const std::wstring& url,
                     ok = true;
                     break;
                 }
-                part.retryCount = retry + 1;
                 Sleep(1000 * (retry + 1));
             }
 
             std::lock_guard<std::mutex> lock(progressMutex);
             if (ok) {
-                part.completed = true;
                 totalDownloaded += downloaded;
                 completedParts++;
             } else {

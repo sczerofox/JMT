@@ -1,8 +1,8 @@
-#include "use_command.hpp"
-#include "../service/jdk_scan_service.hpp"
-#include "../service/java_env_service.hpp"
-#include "../print/color_print.hpp"
-#include "../infrastructure/elevation_helper.hpp"
+#include "command/use_command.hpp"
+#include "jdk/jdk_scan_service.hpp"
+#include "jdk/java_env_service.hpp"
+#include "console/color_print.hpp"
+#include "system/elevation_helper.hpp"
 
 int UseCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
     if (!ctx.isElevated) {

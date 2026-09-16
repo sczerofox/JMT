@@ -1,15 +1,63 @@
-# Clion / Java Manager Tool 
-# java 版本管理工具
+# ============================================================
+# JMT / Java Manager Tool
+# 仓库只发布：源码（src/ include/ resources/）+ 构建配置 + 可直接下载的 jmt.exe
+# 其余本机环境产物、内部文档都不上传
+# ============================================================
 
-# IDEA 工作目录不要
+# ---------- IDE / 编辑器 ----------
 .idea/
+.vs/
+.vscode/
+*.iml
+*.user
+*.suo
+CMakeUserPresets.json
 
-# CMake Build Debug
-# 忽略 cmake-build-* 目录下的所有内容
+# ---------- 构建输出目录 ----------
+# 忽略 cmake-build-* 目录内的全部内容（保留目录本身，便于下面单独放行 jmt.exe）
 cmake-build-*/*
-
-# 但排除（不忽略）其中的 jmt.exe
+# 例外：保留已编译好的 jmt.exe，用户可直接下载使用，无需自行编译
 !cmake-build-*/jmt.exe
+# 其他常见构建目录（IDE / 命令行构建）
+build/
+out/
+x64/
+Debug/
+Release/
 
-# 排除 CLAUDE.md
+# ---------- 编译中间产物 ----------
+*.obj
+*.o
+*.res
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.tlog
+*.lastbuildstate
+
+# ---------- JMT 运行期产物（在 exe 同目录生成） ----------
+.jmt_cache
+.repo/
+.temp/
+.trash/
+.data/
+
+# ---------- 内部文档与协作配置（不随源码发布） ----------
 CLAUDE.md
+本次需求文档.txt
+jdk下载分析数据.txt
+# 需求 / 审验 / 分析类文档；如需发布某个 .docx，用 git add -f 强制添加
+*.docx
+
+# ---------- 本地测试代码（不上传 GitHub，仅本机保留） ----------
+tests/
+
+# ---------- Office / Word 临时锁文件 ----------
+~$*
+
+# ---------- 操作系统杂项 ----------
+Thumbs.db
+desktop.ini
+.DS_Store
+*.tmp

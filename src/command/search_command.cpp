@@ -1,9 +1,9 @@
-#include "search_command.hpp"
-#include "../service/jdk_scan_service.hpp"
-#include "../service/java_env_service.hpp"
-#include "../print/color_print.hpp"
-#include "../utils/string_helper.hpp"
-#include "../infrastructure/elevation_helper.hpp"
+#include "command/search_command.hpp"
+#include "jdk/jdk_scan_service.hpp"
+#include "jdk/java_env_service.hpp"
+#include "console/color_print.hpp"
+#include "common/string_helper.hpp"
+#include "system/elevation_helper.hpp"
 
 int SearchCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
     if (!ctx.isElevated) {

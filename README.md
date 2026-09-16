@@ -1,29 +1,32 @@
 # JMT – Java Manager Tool V1.7
 
-**JMT** 是一款 Windows 平台纯命令行 JDK 版本管理工具（类似 NVM for Node.js），支持全盘扫描、一键版本切换、在线下载安装、环境变量自动管理。
+**JMT** 是一款 Windows 平台纯命令行 JDK 版本管理工具（类似 NVM for Node.js）：全盘扫描本机 JDK、一键切换版本、镜像/官方多源下载安装、环境变量自动维护。
 
-- C++17 开发，仅依赖 Win32 API + C++ 标准库
-- 直接操作系统 PATH，无需 `JAVA_HOME`
-- 多源下载（镜像 + 官方回退），多线程 Range 下载加速
-- 交互式 REPL + 单次命令双模式
+- C++17 开发，仅依赖 Win32 API + C++ 标准库，静态链接 CRT，单 exe 分发
+- 直接维护 PATH 中的 JDK `bin` 条目，不使用 `JAVA_HOME`
+- 多源下载：内置华为云镜像优先，官方 Adoptium 源兜底；curl / 多线程 Range 双下载引擎
+- 交互式 REPL（无参运行 `jmt`）+ 单次命令双模式
+- 删除先进回收站（`.trash`），可用 `rollback` 还原
+
+当前版本：**JMT v1.7 (build 2026.07.13)**（可通过 `jmt version` 查看）
 
 ---
 
 ## 功能一览
 
-| 命令 | 功能 |
-|------|------|
-| `jmt search` | 全盘扫描 JDK，自动配置最大版本到 PATH |
-| `jmt list` | 列出已安装版本，标注当前生效版本 |
-| `jmt use <ver>` | 切换 PATH 至指定版本 |
-| `jmt download <ver>` | 从镜像/官方下载并自动安装 JDK |
-| `jmt env` | 注册 JMT 自身到系统 PATH |
-| `jmt remove` | 删除 JDK / 清理 PATH / 清空回收站 |
-| `jmt data` | 导出/导入 JDK 列表 |
-| `jmt rollback <ver>` | 从回收站恢复已删除的 JDK |
-| `jmt shell` | 打开新终端进入交互模式 |
-| `jmt version` | 显示版本信息 |
-| `jmt help` | 显示帮助 |
+| 命令 | 功能 | 需要管理员权限 |
+|------|------|----------------|
+| `jmt search [--force]` | 扫描本机 JDK，PATH 中无 JDK 时自动切换到最大版本 | 是 |
+| `jmt list` | 列出已识别版本，标注当前生效版本 | 否 |
+| `jmt use <ver>` | 切换 PATH 中的 JDK `bin` 条目到指定版本 | 是 |
+| `jmt download <ver>` | 从镜像/官方源下载并安装 JDK，自动设为当前版本 | 是 |
+| `jmt env` | 注册 JMT 自身目录到 PATH | 是 |
+| `jmt remove <子命令>` | 删除 JDK / 清理环境 / 清空回收站 | 是 |
+| `jmt data <子命令>` | 导出 / 导入 JDK 列表 | `input` 需要 |
+| `jmt rollback <ver\|list>` | 从回收站恢复已删除的 JDK | 恢复需要，`list` 不需要 |
+| `jmt shell` | 打开已配置环境的新终端（旧窗口自动退出） | 否 |
+| `jmt version` | 显示版本信息 | 否 |
+| `jmt help [命令]` | 显示帮助或指定命令详情 | 否 |
 
 ---
 
@@ -31,13 +34,15 @@
 
 ### 1. 部署
 
-将 `jmt.exe` 放到任意目录，然后以管理员身份运行：
+把 `jmt.exe` 放到任意目录，以管理员身份运行：
 
 ```cmd
 jmt env
 ```
 
-该命令将 JMT 所在目录添加到系统 PATH，之后可在任意终端使用 `jmt`。若移动了 `jmt.exe`，再次执行 `jmt env` 会自动清理旧路径。
+该命令把 JMT 所在目录追加到系统 PATH（先删除同名旧条目再去重追加）。移动了 `jmt.exe` 之后再次执行 `jmt env` 即可修正路径。
+
+> 提权行为：需要管理员权限的命令若当前未提权，JMT 会通过 UAC 重新以管理员身份启动，命令在**新弹出的窗口**中执行（执行完停留等待按键），原窗口立即以退出码 `0` 返回。
 
 ### 2. 扫描现有 JDK
 
@@ -45,7 +50,12 @@ jmt env
 jmt search
 ```
 
-全盘扫描所有合法 JDK，自动将最大版本设为当前版本。后续使用 `--force` 参数强制重新扫描。
+扫描常见 Java 安装目录 + 所有固定磁盘（递归 3 层），结果写入缓存 `.jmt_cache`：
+
+- PATH 中**已有** JMT 管理的 JDK：只报告扫描结果和当前版本，不改环境变量
+- PATH 中**没有** JDK：自动把最大版本写入 PATH
+
+手动移动/删除过 JDK 目录后，用 `jmt search --force` 忽略缓存强制重扫。
 
 ### 3. 切换版本
 
@@ -53,7 +63,7 @@ jmt search
 jmt use 21
 ```
 
-切换 PATH 中的 JDK bin 路径至版本 21。如果该版本不存在，会提示未找到。切换后需要重启终端使环境变量生效。
+把 PATH 中所有 JDK `bin` 条目清掉，再追加目标版本的 `\bin`，最后广播 `WM_SETTINGCHANGE`。切换后请重启终端（或新开终端）使环境变量生效。
 
 ### 4. 下载安装新版本
 
@@ -61,7 +71,7 @@ jmt use 21
 jmt download 17
 ```
 
-从镜像源下载 JDK 17 的 ZIP 包，自动解压安装到 `D:\Program Files\Java\jdk-17` 并设为当前版本。
+默认按「内置镜像 ZIP → 内置镜像 EXE → 官方 Adoptium ZIP」顺序尝试，成功后自动解压并设为当前版本。默认安装根目录是**第一个可用的 `D:`~`Z:` 盘**下的 `Program Files\Java`，通常即 `D:\Program Files\Java\jdk-17`；若全部不可用则退回 `C:\Program Files\Java`。
 
 ---
 
@@ -69,140 +79,166 @@ jmt download 17
 
 ### `jmt search [--force]`
 
-全盘扫描 SSD 上所有合法 JDK（校验 `bin\java.exe` + `bin\javac.exe` + `lib` 目录），结果缓存到 `.jmt_cache`。
+扫描并（在需要时）自动配置 JDK。
 
-- **若 PATH 中已有 JDK**：显示扫描结果和当前版本，不自动切换
-- **若 PATH 中无 JDK**：自动将最大版本加入 PATH
-- `--force`：忽略缓存，强制全盘重新扫描
-
-扫描范围：常见 Java 安装目录（`C:\Program Files\Java` 等）+ 所有非系统驱动器，递归深度 3 层。
+- 扫描范围：`C:\Program Files\Java`、`C:\Program Files (x86)\Java`、`C:\jdk`、`D:\Java`、`E:\Java`、`D:\jdk` 等常见目录，以及所有固定磁盘根目录，递归深度 3 层
+- 排除目录：`C:\Windows`、`C:\ProgramData`、`C:\System Volume Information`、`$Recycle.Bin`、`System Volume Information`、`Recovery`、`Temp`
+- 合法 JDK 判定：存在 `bin\java.exe` + `bin\javac.exe` + `lib` 目录，且目录名不是 `jre`
+- 版本号来源：优先读 `release` 文件中的 `JAVA_VERSION`（`1.8.x` 归一化为 `8`），否则从路径名匹配 `jdk1.8` / `jdk-17` / `jdk17`
+- 结果写缓存 `.jmt_cache`；`--force` 忽略缓存强制重扫
 
 ### `jmt list`
 
-从缓存读取并显示所有已识别 JDK。当前生效版本绿色高亮。缓存失效时自动触发重新扫描。
+读取缓存（缓存缺失或条目失效时自动重扫）并列出全部版本，当前生效版本高亮显示，结尾输出版本总数与当前版本。
 
 ### `jmt use <version>`
 
-切换 PATH 至指定版本。执行流程：
-1. 从缓存查找指定版本路径
-2. 删除 PATH 中所有 JDK bin 路径（以 `bin` 结尾且包含 `jdk` 的条目）
-3. 移除 Oracle javapath（如存在）
-4. 添加目标版本的 `\bin` 路径
-5. 广播 `WM_SETTINGCHANGE` 通知系统
+1. 从缓存（必要时先扫描）按版本号精确匹配 JDK 路径
+2. 删除 PATH 中所有「以 `bin` 结尾且路径包含 `jdk`」的条目
+3. 移除 Oracle `javapath` 条目
+4. 追加目标版本的 `\bin`
+5. 广播 `WM_SETTINGCHANGE`
+
+版本号不存在时返回退出码 `2`。
 
 ### `jmt env`
 
-将 `jmt.exe` 所在目录注册到 PATH（先删旧条目再去重追加）。自动尝试系统 PATH（HKLM），权限不足时降级到用户 PATH（HKCU）。
+把 `jmt.exe` 所在目录注册到 PATH：先删除同名旧条目（忽略大小写与末尾斜杠），再去重追加，最后广播环境变更。
 
-### `jmt remove <subcommand>`
+### `jmt remove <子命令> [--user|--sys]`
 
-| 子命令 | 功能 |
+| 子命令 | 行为 |
 |--------|------|
 | `env` | 从 PATH 中移除 JMT 自身目录 |
-| `all` | 完全清理：清除 JDK PATH + 删除回收站 + 删除下载缓存 + 清理 JAVA_HOME |
+| `all` | 完全清理：清空 JDK PATH 并恢复 Oracle javapath → 移除 JMT 目录 → 删除 `.trash` → 删除 `.temp` → 删除 `.jmt_cache` → 删除所有 `JAVA_HOME*` 变量（需按 `y` 确认） |
 | `temp` | 删除 `.temp` 下载缓存目录 |
-| `trash` | 永久清空 `.trash` 回收站 |
-| `<版本号>` | 删除指定版本 JDK（移至回收站），自动处理 PATH 切换 |
+| `trash` | 永久清空回收站 `.trash`（需按 `y` 确认） |
+| `<版本号>` | 把该版本目录移入 `.trash\jdk-<版本>_<时间戳>`，并清理相关 PATH 条目 |
 
-`remove <版本>` 行为：
-- 若删除的是当前版本：自动切换到剩余的最大版本（若无其他版本则清除 JDK PATH）
-- 若非当前版本：清理 PATH 中残留的该版本 bin 路径
-- JDK 目录移至 `.trash\jdk-<版本>_<时间戳>`
-- 支持 `--user` / `--sys` 参数指定 PATH 操作目标
+`remove <版本号>` 的 PATH 处理：
 
-### `jmt download <version> [flags]`
+- 删的是当前生效版本：自动切换到剩余版本中的最大值；没有其它版本时清空 JDK PATH
+- 删的不是当前版本：仅移除 PATH 中该版本的 `bin` 残留条目
+- 结束前还会删除 `JAVA_HOME<版本>` 变量并更新缓存
+
+移动失败（跨卷）时自动降级为「复制 + 删除原目录」，并在回收站目录写入 `.original_path` 元数据供 `rollback` 还原。
+
+### `jmt download <version> [--mirror] [exe] [java]`
 
 | 参数 | 行为 |
 |------|------|
-| 默认（无参数） | 镜像 ZIP → 镜像 EXE → 官方 ZIP，三级回退 |
-| `--mirror` | 仅从镜像源下载，不回退官方 |
-| `exe` | 强制下载 EXE 安装包到 `.temp`，不自动安装 |
-| `java` | 强制从官方 Adoptium API 下载 |
+| 默认 | 镜像 ZIP → 镜像 EXE → 官方 Adoptium ZIP，三级回退 |
+| `--mirror` | 只走镜像：ZIP 失败再试 EXE，不访问官方源 |
+| `java` | 跳过镜像，直接用官方 Adoptium API 下载 ZIP |
+| `exe` | 已解析但**暂无独立分支**，行为与默认一致（见「已知限制」） |
 
-下载策略：
-1. **镜像 ZIP**：优先尝试华为云等国内镜像的 ZIP 包，自动解压安装
-2. **镜像 EXE**：无可用 ZIP 时尝试 EXE 下载（保存到 `.temp`，提示手动安装）
-3. **官方源**：通过 Adoptium API 获取下载链接并下载 ZIP
-4. 所有 ZIP 解压后自动修复嵌套目录结构
+其它行为：
 
-若目标版本已存在，提示是否覆盖：确认后将旧版本移至回收站，自动切换 PATH，再下载新版本。
+- 版本参数只保留主版本号（`17.0.2` → `17`），并在有差异时提示
+- 目标版本已存在时询问是否覆盖：确认后把旧目录移入回收站、必要时切换 PATH，再重新下载
+- ZIP 下载后校验 `PK\x03\x04` 魔数，再用 PowerShell `Expand-Archive` 解压
+- 解压结果为单层嵌套目录时自动上移内容并删除空壳目录
+- 找不到可自动安装的 ZIP 时下载 EXE 安装包到 `.temp`（不自动安装），提示手动安装后执行 `jmt search`
+- 安装成功后强制刷新缓存并把新版本设为当前版本
 
-### `jmt data`
+### `jmt data output` / `jmt data input`
 
-```
+```cmd
 jmt data output    # 导出当前 JDK 列表到 .data\ver_out.txt
 jmt data input     # 从 .data\ver_out.txt 导入并安装 JDK
 ```
 
-`data output`：扫描所有 JDK，以 `版本号|安装路径` 格式写入 `.data\ver_out.txt`。
+- `output`：按 `版本号|安装路径` 逐行写入 `.data\ver_out.txt`（UTF-8 带 BOM）
+- `input`：逐行解析；目标路径已是合法 JDK 则跳过，否则询问是否下载，安装到该路径的父目录并复用 `downloadAndInstall`，最后强制刷新缓存并输出汇总统计
 
-`data input`：逐条读取 `ver_out.txt`，自动跳过已存在的 JDK，对不存在的路径询问用户是否下载安装。批量安装后自动刷新缓存。
+### `jmt rollback <version>` / `jmt rollback list`
 
-### `jmt rollback <version | list>`
-
-```
+```cmd
+jmt rollback list     # 查看回收站中可恢复的版本及原始路径
 jmt rollback 21       # 恢复版本 21 到原始路径
-jmt rollback list     # 查看回收站中所有可恢复版本
 ```
 
-- 从 `.trash` 目录下查找匹配版本的备份（按创建时间取最新）
-- 读取 `.original_path` 元数据确定原始安装路径
-- 优先 `MoveFileW` 快速恢复，跨卷时自动使用 `xcopy` 提权复制
+- 在 `.trash\jdk-<版本>_*` 中按创建时间取最新条目
+- 读取 `.original_path` 得到原始路径（会清理控制字符与末尾斜杠）
+- 原路径已存在时拒绝覆盖；父目录不存在时自动递归创建
+- 优先 `MoveFileW`，失败则用提权 `xcopy /E /I /Y` 复制并删除回收站副本
+- 恢复成功后强制重扫并刷新缓存
 
 ### `jmt shell`
 
-打开一个新的 CMD 窗口，自动进入 JMT 交互模式（相当于在新窗口中执行 `jmt`）。
+用 `cmd.exe /k` 打开新窗口并自动进入 JMT 交互模式，同时向当前控制台输入缓冲区注入 `exit`，让旧窗口自动关闭。
 
 ### `jmt version`
 
-显示版本号：`JMT v1.7 (build 2026.07.13)`
+输出 `JMT v1.7 (build 2026.07.13)`。
+
+### `jmt help [命令]`
+
+不带参数显示分组帮助；带命令名时显示该命令说明，并对 `search` / `download` / `remove` / `data` / `rollback` 追加子命令或参数说明。
 
 ---
 
 ## 交互模式
 
-直接运行 `jmt.exe`（不带参数）进入交互式 REPL：
+不带任何参数运行 `jmt.exe` 进入 REPL：
 
 ```
+=====================================
+Java Manager Tool v1.7
+=====================================
 jmt> search
 jmt> list
 jmt> use 21
 jmt> exit
 ```
 
-支持 `exit` / `quit` 退出，`Ctrl+C` 捕获后重新显示提示符。
+- `exit` / `quit` 退出；`Ctrl+C` 被捕获后仅重新显示提示符
+- 命令解析支持双引号包裹带空格的参数
+- 需要提权的命令在 REPL 内由各命令自行触发提权（会另开窗口执行）
 
 ---
 
 ## 下载源管理
 
-JMT 内置了华为云镜像源（JDK 6~26），支持通过外部文件扩展。
-
-启动时自动在 `jmt.exe` 同级目录生成 `.repo/` 目录：
+启动时若 `jmt.exe` 同级不存在 `.repo` 目录，会自动创建并生成两个源文件；检测到旧版遗留的 UTF-16 LE 编码文件时会删除重建为 UTF-8：
 
 ```
 .repo/
-├── jdk_zip_repo.txt    # ZIP 下载源列表
-└── jdk_exe_repo.txt    # EXE 下载源列表
+├── jdk_zip_repo.txt    # ZIP 源，每行一个 URL
+└── jdk_exe_repo.txt    # EXE 安装包源，每行一个 URL
 ```
 
-**自定义源**：编辑上述文件，每行一个 URL，`#` 开头为注释。版本号从 URL 中自动提取。外部 URL 优先级低于内置源。
+格式约定：每行一个 URL，`#` 开头为注释行，版本号从 URL 中自动提取（`/jdk/11.0.2/`、`openjdk-17_...zip` 等写法均可识别）。
+
+内置映射：
+
+- ZIP 源（华为云）：主版本 11 ~ 26，每个版本含多个补丁版本 URL
+- EXE 源（华为云旧库）：主版本 6 ~ 13
+
+外部文件中的 URL 会追加到内置映射之后；**只有内置映射未覆盖该版本时，外部 URL 才会被采用**（同一版本仅取列表中第一条 URL，详见「已知限制」）。
+
+官方回退：`https://api.adoptium.net/v3/binary/latest/<版本>/ga/windows/x64/jdk/hotspot/normal/eclipse`，JMT 手动读取 307 重定向的 `Location` 得到真实下载地址。
+
+下载引擎：优先调用系统 `curl.exe`（`-L --retry 3 --progress-bar`），失败时回退到内置多线程下载器（WinHTTP Range 分片，4 连接、超时 60 秒、失败重试 3 次；文件小于 10 MB 或拿不到大小时退化为单连接）。
 
 ---
 
 ## 运行时目录
 
+均位于 `jmt.exe` 同级目录，可整体删除（`jmt remove all` 会一并清理）：
+
 ```
-jmt.exe 同级目录：
-├── .jmt_cache       # JDK 扫描缓存（自动生成 + 自愈）
-├── .trash/           # 回收站（删除时移入，支持回退）
-├── .temp/            # 下载临时文件（ZIP 解压后删除，EXE 保留）
-├── .repo/            # 外部镜像源映射
+├── .jmt_cache              # JDK 扫描缓存（UTF-16 LE，每行 版本号|路径）
+├── .trash/                  # 回收站，jdk-<版本>_<时间戳> + .original_path
+├── .temp/                   # 下载临时文件（ZIP 解压后删除，EXE 保留供手动安装）
+├── .repo/                   # 镜像源列表（自动生成）
 │   ├── jdk_zip_repo.txt
 │   └── jdk_exe_repo.txt
-└── .data/            # 导出数据
-    └── ver_out.txt   # data output 生成
+└── .data/                   # 导出数据
+    └── ver_out.txt          # data output 生成
 ```
+
+多线程下载的分块临时文件写在系统临时目录（`%TEMP%\jmt_part_<n>.tmp`），下载完成或失败后自动清理。
 
 ---
 
@@ -213,20 +249,31 @@ jmt.exe 同级目录：
 | 0 | 成功 |
 | 1 | 参数错误 / 未知命令 |
 | 2 | 未找到 JDK / 版本 |
-| 3 | 权限不足 |
+| 3 | 权限不足（提权失败或注册表写入失败） |
 | 4 | 网络或磁盘错误 |
 
 ---
 
 ## 注意事项
 
-**管理员权限**：修改系统 PATH 需要管理员权限。JMT 在检测到需要提权时会自动通过 UAC 弹窗递归重启。若提权失败，自动降级到用户 PATH（仅影响当前用户）。
+**管理员权限**：修改 PATH 需要管理员权限。JMT 检测到未提权时会通过 UAC 重新启动自身，命令在新窗口中执行，原窗口立即以 `0` 返回；提权失败时返回 `3`。
 
-**终端重启**：环境变量修改后需重启终端使新 PATH 生效。
+**终端重启**：环境变量修改通过广播 `WM_SETTINGCHANGE` 通知系统，已经打开的终端仍需重启才能读到新 PATH。
 
-**缓存维护**：手动移动/删除 JDK 后执行 `jmt search --force` 强制刷新缓存。
+**PATH 管理策略**：JMT 用启发式规则识别 JDK 条目（路径以 `bin` 结尾且包含 `jdk`，忽略大小写与末尾斜杠），切换时先清空所有匹配条目再追加新条目；不使用 `JAVA_HOME`（`remove all` 会顺带清理它）。
 
-**PATH 管理策略**：JMT 通过启发式检测（路径以 `bin` 结尾且包含 `jdk`）识别和管理 JDK 路径，切换时清除所有匹配条目再添加新条目。不再使用 `JAVA_HOME`。
+**缓存维护**：缓存条目读取时逐条校验，失效条目自动剔除并重写；需要彻底重扫时用 `jmt search --force`。
+
+### 已知限制
+
+以下行为来自当前源码实现，与直觉或旧版文档可能不同：
+
+1. **输出依赖真实控制台**：所有输出走 `WriteConsoleW`（`src/console/color_print.cpp`），把 stdout 重定向到文件或管道时看不到任何内容，只有退出码可用。
+2. **`--user` / 用户级 PATH 降级不生效**：`RegistryOperator` 无论目标是系统还是用户都打开注册表相对路径 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`，该键在 `HKCU` 下不存在（用户级环境变量实际位于 `HKCU\Environment`），因此 `--user` 分支与「无权限时自动降级到用户 PATH」都不会真正写入，`remove env` 等命令仍会打印成功提示。
+3. **`download ... exe` 参数未生效**：`src/command/download_command.cpp` 只把 `exe` 识别为兼容参数后跳过，没有任何分支使用它，实际行为等同默认策略。
+4. **外部镜像源只在版本缺失时生效**：`findZipUrl` / `findExeUrl` 只返回该版本列表中的第一条 URL，内置版本（ZIP 11~26、EXE 6~13）始终使用内置第一条，追加在后面的外部 URL 不会被尝试。
+5. **交互模式提权体验有限**：REPL 顶层不做提权判断，由各命令自行调用 `runas`，会在新窗口执行并停留等待按键。
+6. **版本号常量分散多处**：`src/command/version_command.cpp` 与 `src/console/repl_engine.cpp` 的 banner 各写一份，升级版本时需同步修改。
 
 ---
 
@@ -234,57 +281,76 @@ jmt.exe 同级目录：
 
 ### 依赖
 
-- Visual Studio Build Tools 2022（或其他支持 C++17 的 MSVC）
+- Visual Studio Build Tools（MSVC，支持 C++17）
 - CMake 3.15+
 
 ### 构建步骤
 
 ```bash
-# Release 构建
-cmake -S . -B build
+cmake -S . -B build                 # 配置（默认同时构建测试）
 cmake --build build --config Release
-
-# Debug 构建
 cmake --build build --config Debug
 ```
 
-输出 `jmt.exe`，无外部 DLL 依赖（静态链接 CRT）。
+输出 `jmt.exe`，无外部 DLL 依赖（静态链接 CRT，`MSVC_RUNTIME_LIBRARY=MultiThreaded`）。
+
+### 单元测试与集成测试
+
+业务代码（`src/main.cpp` 之外的全部源文件）编译为静态库 `jmt_core`，测试可执行文件链接同一份实现：
+
+```bash
+# Ninja 单配置生成器
+cmake -S . -B build -G Ninja
+cmake --build build
+ctest --test-dir build --output-on-failure
+
+# 只跑某一组
+ctest --test-dir build -R unit.path_utils --output-on-failure
+build/jmt_tests.exe --suite path_utils
+build/jmt_tests.exe --list
+
+# 关闭测试构建
+cmake -S . -B build -DJMT_BUILD_TESTS=OFF
+```
+
+现有 4 组用例：`unit.string_helper`、`unit.path_utils`、`unit.version_parse`、`integration.cli_smoke`。约定：`tests/unit/` 用例不触碰注册表/PATH/网络；`tests/integration/` 只调用只读命令（`version`、`help`、未知命令）。`tests/` 已被 `.gitignore` 排除，仓库不发布测试代码；`CMakeLists.txt` 会先判断该目录是否存在，再决定是否注册测试目标。
 
 ### 链接库
 
 - `Shlwapi.lib` - Shell 路径 API
 - `Wininet.lib` / `Winhttp.lib` - HTTP 下载
-- `Advapi32.lib` - 注册表操作 + 提权检测
+- `Advapi32.lib` - 注册表操作与提权检测
 
 ---
 
 ## 项目结构
 
+头文件与实现分离：`include/` 是头文件搜索根目录，`src/` 按模块一一对应，包含时统一写模块前缀（如 `#include "jdk/jdk_scan_service.hpp"`）。
+
 ```
-src/
-├── main.cpp                      # 入口：初始化、提权调度、命令分发
-├── app.rc                        # 版本资源
-├── core/                         # 核心抽象
-│   ├── command_base.hpp
-│   └── command_registry.cpp/hpp
-├── command/                      # 12 个命令实现
-│   ├── search/list/use/env/remove/download
-│   ├── version/shell/help/rollback/data
-├── service/                      # 业务逻辑
-│   ├── jdk_scan_service          # 扫描 + 缓存
-│   ├── java_env_service          # PATH 管理
-│   ├── jdk_download_service      # 下载 + 源管理
-│   └── jmt_path_service          # 自注册 PATH
-├── infrastructure/               # Win32 封装
-│   ├── registry_operator         # 注册表读写 + 自动降级
-│   ├── path_utils                # PATH 解析标准化
-│   ├── elevation_helper          # 提权检测 + runas 启动
-│   └── file_lock                 # 文件锁
-├── network/
-│   └── multi_thread_downloader   # HTTP Range 分片下载
-├── print/                        # 彩色输出 + 进度条
-└── utils/                        # 文件系统 + 字符串工具
+include/                          src/
+├── command/                      ├── command/          # 11 个命令实现
+│   ├── command_base.hpp          ├── jdk/              # 业务服务层
+│   ├── jmt_context.hpp           ├── system/           # Win32 封装
+│   ├── command_registry.hpp      ├── network/          # 多线程下载器
+│   └── *_command.hpp             ├── console/          # 彩色输出 / 进度 / REPL
+├── jdk/                          ├── common/           # 字符串工具
+│   ├── jdk_scan_service.hpp      └── main.cpp          # 入口：初始化、提权、分发
+│   ├── java_env_service.hpp
+│   ├── jdk_download_service.hpp
+│   └── jmt_path_service.hpp
+├── system/                       resources/
+│   ├── registry_operator.hpp     ├── app.rc            # 图标资源
+│   ├── path_utils.hpp            └── app.ico
+│   ├── elevation_helper.hpp
+│   ├── file_lock.hpp
+│   └── utils.hpp
+├── network/multi_thread_downloader.hpp
+├── console/{color_print,console_progress,repl_engine,repl_utils}.hpp
+└── common/string_helper.hpp
 ```
+
+模块依赖方向：`common` → `system` / `network` / `console` → `jdk` → `command`，`main.cpp` 为聚合入口，无头文件循环依赖。
 
 ---
 

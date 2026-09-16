@@ -1,5 +1,5 @@
-#include "help_command.hpp"
-#include "../print/color_print.hpp"
+#include "command/help_command.hpp"
+#include "console/color_print.hpp"
 
 HelpCommand::HelpCommand(const CommandRegistry& registry) : registry_(registry) {}
 

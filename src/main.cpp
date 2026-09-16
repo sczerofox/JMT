@@ -1,5 +1,5 @@
-#include "core/command_registry.hpp"
-#include "core/jmt_context.hpp"
+#include "command/command_registry.hpp"
+#include "command/jmt_context.hpp"
 #include "command/search_command.hpp"
 #include "command/list_command.hpp"
 #include "command/use_command.hpp"
@@ -11,11 +11,11 @@
 #include "command/help_command.hpp"
 #include "command/rollback_command.hpp"
 #include "command/data_command.hpp"
-#include "repl/repl_engine.hpp"
-#include "print/color_print.hpp"
-#include "utils/utils.hpp"
-#include "infrastructure/elevation_helper.hpp"
-#include "service/jdk_download_service.hpp"
+#include "console/repl_engine.hpp"
+#include "console/color_print.hpp"
+#include "system/utils.hpp"
+#include "system/elevation_helper.hpp"
+#include "jdk/jdk_download_service.hpp"
 #include <vector>
 #include <memory>
 

@@ -1,10 +1,10 @@
-#include "remove_command.hpp"
-#include "../service/java_env_service.hpp"
-#include "../service/jdk_scan_service.hpp"
-#include "../infrastructure/path_utils.hpp"
-#include "../print/color_print.hpp"
-#include "../utils/utils.hpp"
-#include "../infrastructure/elevation_helper.hpp"
+#include "command/remove_command.hpp"
+#include "jdk/java_env_service.hpp"
+#include "jdk/jdk_scan_service.hpp"
+#include "system/path_utils.hpp"
+#include "console/color_print.hpp"
+#include "system/utils.hpp"
+#include "system/elevation_helper.hpp"
 #include <algorithm>
 #include <cctype>
 #include <conio.h>

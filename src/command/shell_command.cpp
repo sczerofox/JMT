@@ -1,6 +1,6 @@
-#include "shell_command.hpp"
-#include "../utils/utils.hpp"
-#include "../print/color_print.hpp"
+#include "command/shell_command.hpp"
+#include "system/utils.hpp"
+#include "console/color_print.hpp"
 #include <windows.h>
 #include <shellapi.h>
 

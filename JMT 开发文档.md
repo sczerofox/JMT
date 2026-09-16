@@ -1,6 +1,8 @@
 # JMT（Java Manager Tool）开发文档 V1.7
 
-> Windows 平台 JDK 版本管理工具 | C++17 | 纯 Win32 API | 无外部依赖
+> Windows 平台 JDK 版本管理工具 | C++17 | 纯 Win32 API | 无第三方依赖
+
+本文档依据仓库当前源码（分支 `hotfix`，包含 `include/` / `src/` 按模块拆分的重构）整理，描述**实际实现**而非设计意图；与实际代码不一致的地方在「10.4 已知问题与实现差异」中明确列出。
 
 ---
 
@@ -8,15 +10,14 @@
 
 1. [项目概述](#1-项目概述)
 2. [架构总览](#2-架构总览)
-3. [命令参考](#3-命令参考)
-4. [核心模块](#4-核心模块)
-5. [服务层](#5-服务层)
-6. [基础设施层](#6-基础设施层)
-7. [数据流与典型场景](#7-数据流与典型场景)
-8. [提权策略](#8-提权策略)
-9. [异常处理与退出码](#9-异常处理与退出码)
-10. [构建与部署](#10-构建与部署)
-11. [附录](#11-附录)
+3. [命令层](#3-命令层)
+4. [服务层（jdk/）](#4-服务层jdk)
+5. [系统与基础设施](#5-系统与基础设施)
+6. [数据流与典型场景](#6-数据流与典型场景)
+7. [提权策略](#7-提权策略)
+8. [异常处理与退出码](#8-异常处理与退出码)
+9. [构建、测试与发布](#9-构建测试与发布)
+10. [附录](#10-附录)
 
 ---
 
@@ -24,679 +25,666 @@
 
 ### 1.1 简介
 
-JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for Node.js），全盘扫描合法 JDK、一键版本切换、在线下载安装、环境变量自动管理。
+JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for Node.js）：扫描本机 JDK、切换默认版本、下载安装新版本、维护 PATH 环境变量，并保留回收站以便回退。
 
-**核心特性**：
-- 交互式 REPL（无参启动进入 `jmt>` 提示符）和单次命令模式
-- SSD 全盘扫描，自动识别合法 JDK（校验 `java.exe` + `javac.exe` + `lib` 目录）
-- 直接操作系统/用户 PATH 环境变量（注册表 `Environment` 键），不使用 `JAVA_HOME`
-- 多源下载：内置华为云镜像 + 外部可配置源 + Adoptium API 回退
-- 多线程 HTTP Range 下载（断点续传）
-- 回收站机制：删除前移至 `.trash` 支持回退
-- 彩色输出，当前版本高亮
+**核心特性**
+
+- 交互式 REPL（无参启动进入 `jmt>` 提示符）与单次命令模式
+- 固定磁盘全盘扫描，识别合法 JDK（校验 `bin\java.exe` + `bin\javac.exe` + `lib` 目录）
+- 直接读写注册表中的系统 PATH（不使用 `JAVA_HOME`），修改后广播 `WM_SETTINGCHANGE`
+- 多源下载：内置华为云镜像 + 可扩展的 `.repo` 外部源 + Adoptium 官方回退
+- 下载引擎双通道：`curl.exe` 优先，失败回退 WinHTTP Range 多线程分片
+- 删除先进回收站（`.trash`），支持 `rollback` 还原
+- 极简自带测试框架 + CTest，业务代码统一编译为静态库 `jmt_core` 供 exe 与测试共用
 
 ### 1.2 系统要求
 
 - Windows 10/11 x64
-- Visual C++ Redistributable（或静态链接 CRT）
+- 运行时无第三方 DLL 依赖（静态链接 CRT，`MSVC_RUNTIME_LIBRARY=MultiThreaded`）
+- 下载依赖系统自带 `curl.exe`（可选）与 PowerShell `Expand-Archive`
 
-### 1.3 全部命令
+### 1.3 命令总览
 
-| 命令 | 功能 | 提权 |
-|------|------|------|
-| `search [--force]` | 扫描 JDK，若 PATH 中无 JDK 则自动设置最大版本 | 是 |
-| `list` | 列出所有已识别版本，标注当前生效版本 | 否 |
-| `use <ver>` | 切换 PATH 中的 JDK bin 路径至指定版本 | 是 |
-| `env` | 将 JMT 自身目录加入 PATH（去重） | 是 |
-| `remove <子命令>` | 删除 JDK 或清理环境 | 是 |
-| `download <ver>` | 下载并安装 JDK（支持镜像/官方/EXE） | 是 |
-| `data <子命令>` | 导出/导入 JDK 列表 | input 需提权 |
-| `rollback <ver>` | 从回收站恢复已删除的 JDK | 是 |
-| `version` | 显示版本信息 | 否 |
-| `shell` | 打开新 CMD 窗口进入交互模式 | 否 |
-| `help [命令]` | 显示帮助 | 否 |
+共 **11 个命令**（`src/main.cpp` 中注册），提权方式见第 7 章。
+
+| 命令 | 功能 | 提权位置 |
+|------|------|----------|
+| `search [--force]` | 扫描 JDK；PATH 无 JDK 时自动设置最大版本 | `main.cpp` + 命令内 |
+| `list` | 列出所有已识别版本并标注当前版本 | 无需 |
+| `use <ver>` | 切换 PATH 中的 JDK `bin` 条目 | `main.cpp` + 命令内 |
+| `env` | 把 JMT 自身目录加入 PATH | `main.cpp` + 命令内 |
+| `remove <子命令>` | 删除 JDK / 清理环境 / 清空回收站 | `main.cpp` + 命令内 |
+| `download <ver>` | 下载并安装 JDK（镜像/EXE/官方） | `main.cpp` + 命令内 |
+| `data <output\|input>` | 导出 / 导入 JDK 列表 | 命令内（仅 `input`） |
+| `rollback <ver\|list>` | 从回收站恢复 JDK | 命令内（`list` 除外） |
+| `shell` | 打开新终端进入交互模式并关闭旧窗口 | 无需 |
+| `version` | 显示版本信息 | 无需 |
+| `help [命令]` | 显示帮助或命令详情 | 无需 |
 
 ---
 
 ## 2. 架构总览
 
-### 2.1 分层架构
+### 2.1 分层结构
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                   表示层 (main.cpp)                        │
-│  初始化资源映射 → 构建上下文 → 提权决策 → REPL/单次执行    │
-└──────────────────────┬───────────────────────────────────┘
-                       │
-┌──────────────────────▼───────────────────────────────────┐
-│                  命令层 (command/)                         │
-│  CommandBase 接口 → CommandRegistry 映射 → 12 个命令实现   │
-│  每个命令：解析参数 → 调用服务层 → 输出结果              │
-└──────────────────────┬───────────────────────────────────┘
-                       │
-┌──────────────────────▼───────────────────────────────────┐
-│                   服务层 (service/)                        │
-│  JdkScanService    全盘扫描 + 缓存自愈                    │
-│  JavaEnvService    PATH 中 JDK 路径管理（增删改查）      │
-│  JdkDownloadService 多源下载 + ZIP 解压 + 嵌套目录修复   │
-│  JmtPathService    JMT 自身 PATH 注册/注销               │
-└──────────────────────┬───────────────────────────────────┘
-                       │
-┌──────────────────────▼───────────────────────────────────┐
-│                 基础设施层 (infrastructure/)               │
-│  RegistryOperator   注册表读写（自动降级）               │
-│  PathUtils         PATH 解析/标准化/去重                 │
-│  ElevationHelper   提权检测 + runas 递归启动             │
-│  FileLock          缓存文件跨进程锁                      │
-└───────────────────────────────────────────────────────────┘
-
-辅以：
-  network/       多线程 HTTP Range 下载器
-  print/         彩色控制台输出 + 进度条
-  utils/         文件系统工具 + 字符串处理
-  repl/          交互式命令行循环
+┌────────────────────────────────────────────────────────────┐
+│ 入口层  src/main.cpp                                        │
+│ InitConsole → reloadMappings → 构建 JmtContext → 注册命令    │
+│ → REPL（无参）/ 提权判断 + 单次执行                          │
+└──────────────────────────┬─────────────────────────────────┘
+                           │
+┌──────────────────────────▼─────────────────────────────────┐
+│ 命令层  include/command/ + src/command/                     │
+│ CommandBase 接口 → CommandRegistry 映射 → 11 个命令实现      │
+│ 每个命令：解析参数 → （必要时提权）→ 调用服务层 → 输出结果   │
+└──────────────────────────┬─────────────────────────────────┘
+                           │
+┌──────────────────────────▼─────────────────────────────────┐
+│ 服务层  include/jdk/ + src/jdk/                             │
+│ JdkScanService       全盘扫描 + 缓存读写与自愈               │
+│ JavaEnvService       PATH 中 JDK 条目增删改查                │
+│ JdkDownloadService   多源映射 + 下载 + 解压 + 嵌套修复       │
+│ JmtPathService       JMT 自身 PATH 注册                      │
+└──────────────────────────┬─────────────────────────────────┘
+                           │
+┌──────────────────────────▼─────────────────────────────────┐
+│ 支撑层                                                       │
+│ system/   RegistryOperator / PathUtils / ElevationHelper /   │
+│           FileLock / utils                                   │
+│ network/  MultiThreadDownloader（WinHTTP Range 分片）        │
+│ console/  color_print / console_progress / repl_engine /     │
+│           repl_utils                                         │
+│ common/   StringHelper                                       │
+└────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 核心数据结构
+### 2.2 目录与模块映射
 
-**JmtContext** (`src/core/jmt_context.hpp`)
+头文件与实现物理分离：`include/` 是头文件搜索根目录（`target_include_directories`），`src/` 目录名与 `include/` 下模块名一一对应，因此所有包含都写模块前缀：
+
+```cpp
+#include "command/command_base.hpp"
+#include "jdk/jdk_scan_service.hpp"
+#include "system/registry_operator.hpp"
+#include "console/color_print.hpp"
+```
+
+```
+include/                       src/
+├── command/                   ├── command/    command_registry.cpp + 11 个 *_command.cpp
+├── jdk/                       ├── jdk/        4 个服务实现
+├── system/                    ├── system/     5 个 Win32 封装实现
+├── network/                   ├── network/    multi_thread_downloader.cpp
+├── console/                   ├── console/    color_print / console_progress / repl_*
+└── common/                    ├── common/     string_helper.cpp
+                               └── main.cpp    入口（不属于 jmt_core）
+resources/
+├── app.rc                     仅包含 IDI_ICON1 ICON "app.ico"
+└── app.ico
+tests/                         自带框架 + CTest（.gitignore 排除，仓库不发布）
+```
+
+依赖方向：`common` → `system` / `network` / `console` → `jdk` → `command`；`main.cpp` 为聚合入口。命令层可以调用任意服务层与支撑层，反向依赖不存在（头文件层面无循环包含）。
+
+### 2.3 核心抽象
+
+**JmtContext**（`include/command/jmt_context.hpp`）
+
 ```cpp
 struct JmtContext {
     std::wstring exeDirectory;    // jmt.exe 所在目录（无尾随反斜杠）
-    std::wstring cacheFilePath;   // exeDirectory + L"\\.jmt_cache"
-    bool isInteractive;           // 是否交互模式
-    bool isElevated;              // 是否已提权
+    std::wstring cacheFilePath;   // exeDirectory + "\\.jmt_cache"
+    bool isInteractive;           // argc == 1
+    bool isElevated;              // ElevationHelper::IsElevated()
 };
 ```
 
-**CommandBase** (`src/core/command_base.hpp`)
+**CommandBase / CommandRegistry**（`include/command/command_base.hpp`、`command_registry.hpp`）
+
 ```cpp
 class CommandBase {
 public:
     virtual ~CommandBase() = default;
     virtual int execute(const std::vector<std::wstring>& args, JmtContext& ctx) = 0;
-    virtual std::wstring getHelp() const = 0;
+    [[nodiscard]] virtual std::wstring getHelp() const = 0;
+};
+
+class CommandRegistry {   // std::map<std::wstring, std::unique_ptr<CommandBase>>
+public:
+    void registerCommand(const std::wstring& name, std::unique_ptr<CommandBase> cmd);
+    [[nodiscard]] CommandBase* findCommand(const std::wstring& name) const;
 };
 ```
 
----
+命令名是大小写敏感的精确匹配，`args[0]` 是命令名本身（REPL 与单次模式一致）。
 
-## 3. 命令参考
+**环境变量目标**（`include/system/registry_operator.hpp`）
 
-### 3.1 search — 扫描并配置 JDK
-
-```
-jmt search [--force]
-```
-
-- 扫描所有驱动器下合法 JDK（校验 `bin/java.exe` + `bin/javac.exe` + `lib` 目录）
-- 写入缓存 `.jmt_cache`
-- **若 PATH 中已有 JDK**：仅提示当前版本，不自动切换
-- **若 PATH 中无 JDK**：自动切换到最大版本
-- `--force`：强制全盘重新扫描，忽略缓存
-
-### 3.2 list — 列出版本
-
-```
-jmt list
-```
-
-- 从缓存读取 JDK 列表（缓存失效则自动重扫）
-- 当前生效版本绿色高亮
-- 标注 PATH 中是否有 JMT 管理的 JDK
-
-### 3.3 use — 切换版本
-
-```
-jmt use <version>
-```
-
-- 从缓存找到指定版本的 JDK 路径
-- 自动检测并删除 PATH 中所有 `IsJdkBinPath()` 匹配的条目
-- 添加新版本的 `bin` 路径
-- 自动移除 Oracle javapath
-
-### 3.4 env — 注册 PATH
-
-```
-jmt env
-```
-
-- 将 `jmt.exe` 所在目录添加到 PATH
-- 去重，删除已有旧条目再添加
-
-### 3.5 remove — 删除与清理
-
-```
-jmt remove <子命令> [--user|--sys]
-```
-
-子命令：
-| 子命令 | 功能 |
-|--------|------|
-| `env` | 从 PATH 中移除 JMT 自身目录 |
-| `all` | 完全清理：清除 JDK PATH + JMT PATH + 删除 `.trash` `.temp` 缓存 + 清理 `JAVA_HOME*` |
-| `temp` | 删除 `.temp` 下载缓存目录 |
-| `trash` | 永久清空回收站 `.trash` |
-| `<版本号>` | 将指定版本移动到回收站，自动切换 PATH 到最大版本（若删除的是当前版本） |
-
-`--user` / `--sys` 指定操作目标（用户 PATH / 系统 PATH），默认 Auto（自动降级）。
-
-### 3.6 download — 下载安装
-
-```
-jmt download <version> [--mirror] [exe] [java]
-```
-
-下载策略（按优先级）：
-1. **默认（无参数）**：尝试镜像 ZIP → 镜像 EXE → 官方 ZIP
-2. **`--mirror`**：仅从镜像源下载，不回退官方
-3. **`exe`**：强制下载 EXE 安装包到 `.temp`，不自动安装
-4. **`java`**：强制从官方 Adoptium API 下载
-
-**覆盖安装**：若目标版本已存在，提示用户确认 → 移动到回收站 → 自动切换 PATH → 下载新版本 → 自动设为当前版本。
-
-### 3.7 data — 数据导入导出
-
-```
-jmt data output     # 导出当前 JDK 列表到 .data\ver_out.txt
-jmt data input      # 从 .data\ver_out.txt 导入并安装 JDK
-```
-
-**output**：扫描当前所有合法 JDK，写入 `版本号|安装路径` 格式到 `.data\ver_out.txt`。
-
-**input**：读取 `ver_out.txt`，逐条检查：
-- 若路径下已有合法 JDK → 跳过
-- 若路径下无 JDK → 交互询问 → 调用 `downloadAndInstall` 下载安装到指定路径
-
-### 3.8 rollback — 回退
-
-```
-jmt rollback <version>      # 恢复指定版本到原始路径
-jmt rollback list           # 列出回收站中所有可恢复版本
-```
-
-- 从 `.trash\jdk-<版本>_<时间戳>` 恢复
-- 读取 `.original_path` 元数据文件确定原始路径
-- 优先 `MoveFileW`（同卷），失败则 `xcopy` 提权复制
-- 恢复后强制刷新缓存
-
-### 3.9 shell / version / help
-
-```
-jmt shell            # 打开新 CMD 窗口并自动进入交互模式
-jmt version           # 显示 JMT v1.7 (build YYYY.MM.DD)
-jmt help [command]    # 显示帮助信息或命令详情
-```
-
----
-
-## 4. 核心模块
-
-### 4.1 main.cpp — 入口与提权调度
-
-**初始化顺序**：
-1. `InitConsole()` — 设置 UTF-8 代码页，启用虚拟终端
-2. `JdkDownloadService::reloadMappings()` — 加载镜像源映射
-3. 构建 `JmtContext`（目录、缓存路径、交互/提权状态）
-4. 注册 12 个命令到 `CommandRegistry`
-5. 交互模式 → `ReplEngine::run()`
-6. 单次命令模式 → 提权判断 → 执行
-
-**提权判断逻辑**：
-```cpp
-bool needsAdmin = (cmd == L"use" || cmd == L"env" || cmd == L"remove"
-                || cmd == L"search" || cmd == L"download");
-```
-需要提权的命令若未提权：`ShellExecuteW(runas)` 递归启动，父进程退出。
-
-### 4.2 command/ — 命令实现
-
-每个命令类继承 `CommandBase`，职责：
-- 参数解析
-- 提权检查（部分命令自身也做提权，因为 `data input` 等子命令需要）
-- 调用服务层接口
-- 异常捕获与用户输出
-
-### 4.3 repl/ — 交互式循环
-
-- `ReplEngine` 使用 `std::wcin` 读取行
-- `ReplUtils::splitCommandLine` 解析参数
-- 支持 `exit` / `quit` 退出
-- `Ctrl+C` 捕获后重新显示提示符
-- 支持所有命令；但不处理提权（因为已在 main 中处理或在命令自身中处理）
-
----
-
-## 5. 服务层
-
-### 5.1 JdkScanService — 扫描与缓存
-
-**接口**：
-```cpp
-static std::vector<std::pair<std::wstring, std::wstring>> scanJdks(
-    bool force, const std::wstring& cachePath, bool silent = false);
-static bool isValidJdk(const std::wstring& path);
-static std::wstring extractVersion(const std::wstring& path);
-static void writeCache(const std::vector<...>& jdks, const std::wstring& cachePath);
-```
-
-**JDK 合法性校验** (`isValidJdk`)：
-1. 排除 `jre` 目录
-2. 必须存在 `bin\java.exe` + `bin\javac.exe` + `lib` 目录
-
-**版本号提取** (`extractVersion`)：
-1. 优先读取 `release` 文件中的 `JAVA_VERSION` 字段
-2. 回退从路径正则匹配：`jdk1.8` → 8, `jdk-17` → 17, `jdk17` → 17
-
-**扫描策略**：
-1. 优先扫描常见路径（`C:\Program Files\Java`, `D:\Java` 等）
-2. 遍历所有非系统驱动器
-3. 递归深度 3 层
-4. 排除系统目录（`C:\Windows`, `C:\ProgramData` 等）
-
-**缓存机制**：
-- 文件位置：`jmt.exe` 同级 `.jmt_cache`
-- 格式：每行 `版本号|绝对路径`，UTF-16 LE
-- 读取时逐条自愈（无效条目移除并重写）
-- `FileLock` 跨进程并发保护
-
-### 5.2 JavaEnvService — PATH 管理
-
-**核心逻辑**：直接操作 PATH 字符串，不使用 `JAVA_HOME`。
-
-**JDK bin 路径判定** (`IsJdkBinPath`)：
-- 路径以 `bin` 结尾（忽略末尾斜杠）
-- 路径包含 `jdk`（不区分大小写）
-
-**接口**：
-```cpp
-static bool setCurrentJdk(const std::wstring& jdkPath, EnvTarget target);
-static bool clearCurrentJdk(EnvTarget target);
-static std::wstring getCurrentVersion();
-```
-- `setCurrentJdk`：删除所有 JDK bin 路径 → 移除 Oracle javapath → 添加新路径 → 广播环境变更
-- `clearCurrentJdk`：删除所有 JDK bin 路径 → 恢复 Oracle javapath（若目录存在）
-- `getCurrentVersion`：从 PATH 中遍历，提取首个 JDK bin 路径中的版本号
-
-### 5.3 JdkDownloadService — 下载与安装
-
-**映射管理**（优先级）：
-1. **内置映射**：`initBuiltinMappings()` 静态初始化，包含 JDK 6~26 的华为云镜像 URL
-2. **外部文件**：`.repo/jdk_zip_repo.txt` + `.repo/jdk_exe_repo.txt`，追加到映射列表末尾
-3. **官方回退**：Adoptium API (`api.adoptium.net/v3/binary/latest/...`)
-
-**文件自动修复**：
-- 启动时检测 `.repo/*.txt` 文件编码（UTF-16 LE 旧版 → 删除重建）
-- 不存在时从内置映射自动生成
-
-**下载策略**：
-- `downloadAndInstall`：ZIP（内置+外部）→ EXE → 官方 ZIP
-- `downloadFromMirror`：仅镜像 ZIP → EXE
-- `downloadFromOfficial`：仅官方 ZIP
-
-**下载引擎**：
-1. 优先 `curl.exe`（系统自带）
-2. 回退 `MultiThreadDownloader`（WinHTTP Range 分片，4 线程）
-
-**ZIP 解压**：通过 PowerShell `Expand-Archive` 命令
-
-**嵌套目录修复** (`FixNestedJdkDirectory`)：
-若解压后目标目录下只有一个子目录且为合法 JDK，则上移内容并删除空壳目录。
-
-### 5.4 JmtPathService — 自身注册
-
-```cpp
-static bool registerJmtPath(const std::wstring& exeDir, EnvTarget target);
-static bool unregisterJmtPath(const std::wstring& exeDir, EnvTarget target);
-```
-
-- 删除旧条目（标准化比较去重）
-- 添加新条目
-- 写入注册表并广播
-
----
-
-## 6. 基础设施层
-
-### 6.1 RegistryOperator — 注册表操作
-
-**环境变量目标**：
 ```cpp
 enum class EnvTarget { Auto, SystemOnly, UserOnly };
 ```
-- `Auto`：先写系统（HKLM），失败自动降级用户（HKCU）
 
-**核心操作**：
-- 读写 PATH（`REG_EXPAND_SZ`）
-- 读写普通环境变量
-- 读写 `REG_MULTI_SZ`（`writeMultiString` / `readMultiString`）
-- 枚举所有变量名（`enumerateEnvValueNames`）
+---
 
-**环境变更广播**（`WM_SETTINGCHANGE`）：
-- `SendMessageTimeoutW` 超时 10 秒
-- 首次失败 → 等待 500ms 重试（5 秒超时）
-- 两次失败仅记录，不影响注册表写入
+## 3. 命令层
 
-### 6.2 PathUtils — 路径处理
+所有命令位于 `src/command/`，命名 `<名称>_command.cpp`，类名 `<名称>Command`。通用模式：
+
+1. 解析参数（剔除 `--user` / `--sys` 等目标参数）
+2. 若需要且当前未提权 → 拼装完整命令行调用 `ElevationHelper::RelaunchElevated`，成功则父进程 `return 0`
+3. 调用服务层
+4. 通过 `PrintInfo` / `PrintSuccess` / `PrintWarning` / `PrintError` 输出，返回退出码
+
+### 3.1 search — 扫描与自动配置
+
+- 仅识别 `--force`（大小写不敏感），其它参数忽略
+- `JdkScanService::scanJdks(force, ctx.cacheFilePath)` → 结果为空返回 `2`
+- `JavaEnvService::getCurrentVersion()` 非空：只报告结果和当前版本，提示用 `jmt use <版本号>` 切换，返回 `0`
+- PATH 中无 JDK：`std::max_element` 按 `std::stoi(版本号)` 取最大版本 → `JavaEnvService::setCurrentJdk(最大版本路径, EnvTarget::Auto)`，失败返回 `3`
+
+### 3.2 list — 列出版本
+
+- `scanJdks(false, cachePath, /*silent=*/true)`；空列表返回 `2`
+- 匹配当前版本的条目用 `PrintSuccess` 高亮，输出「版本总数」与「当前生效版本 / 当前没有 JMT 管理的 JDK 版本」
+
+### 3.3 use — 切换版本
+
+- 缺少版本号：`1`；缓存中找不到该版本：`2`
+- 调用 `JavaEnvService::setCurrentJdk(targetPath, EnvTarget::Auto)`，失败返回 `3`
+- 成功后提示「请重启终端使环境变量生效」
+
+### 3.4 env — 注册自身 PATH
+
+- 调用 `JmtPathService::registerJmtPath(ctx.exeDirectory, EnvTarget::Auto)`
+- 失败返回 `3` 并提示需要管理员权限
+
+### 3.5 remove — 删除与清理
+
+参数预处理：`--user` → `EnvTarget::UserOnly`，`--sys` → `EnvTarget::SystemOnly`，其余进入 `filteredArgs`。缺子命令返回 `1`。
+
+| 子命令 | 实现要点 |
+|--------|----------|
+| `env` | 读 PATH → `PathUtils::removeEntries(entries, ctx.exeDirectory)` → 重写 PATH |
+| `all` | 需按 `y` 确认；`clearCurrentJdk`（含恢复 Oracle javapath）→ 移除 JMT 目录 → `fs::remove_all` 删 `.trash` / `.temp` → 删 `.jmt_cache` → 枚举环境变量删除所有以 `JAVA_HOME` 开头的变量 |
+| `temp` | `fs::remove_all(exeDir\.temp)`，不存在则直接返回 `0` |
+| `trash` | 需按 `y` 确认，`fs::remove_all(exeDir\.trash)` |
+| `<版本号>` | 正则 `^\d+$` 匹配；详见下方流程 |
+
+`remove <版本号>` 流程：
+
+1. `scanJdks(false)`，空则 `scanJdks(true)` 重扫，仍为空返回 `2`；找不到版本返回 `2`
+2. PATH 处理：
+   - 当前版本 == 待删版本：在剩余版本中取最大者 `setCurrentJdk`；无剩余版本则 `clearCurrentJdk`（失败返回 `3`）
+   - 否则：仅从 PATH 移除 `<路径>\bin` 条目
+3. 目录处理：`MoveFileW` 到 `.trash\jdk-<版本>_<yyyyMMdd_HHmmss>`；跨卷失败时 `fs::copy(recursive)` + `fs::remove_all`，异常返回 `4`；随后写入 `.original_path` 元数据
+4. 缓存更新：从列表中剔除该版本后 `writeCache`
+5. 兼容清理：删除 `JAVA_HOME<版本>` 变量
+
+### 3.6 download — 下载安装
+
+参数解析：`--mirror` → `useMirror`，`java` → `forceOfficial`，`exe` 仅识别后跳过（当前与默认策略等价，见 10.4），其余第一个非选项参数作为版本号。版本号用 `^(\d+)` 提取主版本。
+
+分支：
+
+| 条件 | 调用 |
+|------|------|
+| `forceOfficial` | `JdkDownloadService::downloadFromOfficial(版本)` |
+| `useMirror` | `JdkDownloadService::downloadFromMirror(版本)` |
+| 默认 | `JdkDownloadService::downloadAndInstall(版本)` |
+
+覆盖安装：若缓存中已存在该版本，先询问 `y/n`；确认后 `MoveToTrash`（与 `remove` 相同的目录结构与元数据）→ 更新缓存 → 当前版本被删则切到最大版本或清空 PATH → 清理 `JAVA_HOME<版本>`。
+
+安装成功后：`scanJdks(true)` 强制重扫，按「路径等于安装路径 or 版本号等于目标版本」设置当前版本；都没匹配到则退化为设置最大版本。返回值为 `EXE_DOWNLOADED` 时表示只下载了 EXE 安装包（返回 `0`），空字符串表示失败（返回 `4`）。
+
+### 3.7 data — 导入导出
+
+- `output`：`scanJdks(false, cachePath, true)` → 写入 `exeDir\.data\ver_out.txt`，每行 `版本号|安装路径`（UTF-8 带 BOM）
+- `input`：提权后读取 `ver_out.txt`，逐行解析（容忍 `\r`）；
+  - `isValidJdk(path)` 为真 → 跳过并计数
+  - 否则交互询问 `y/n`；确认后以该路径的**父目录**为安装根调用 `downloadAndInstall(版本, 安装根)`
+  - 汇总输出「无需安装 / 成功安装 / 已下载 EXE / 失败」四项计数，有失败则返回 `4`，否则 `0`；有成功安装时强制重扫刷新缓存
+
+### 3.8 rollback — 回收站回退
+
+- `rollback list`：列 `.trash\jdk-*` 目录，用 `jdk-(\d+)_` 提取版本，读取 `.original_path`（经 `CleanPath` 去控制字符与尾分隔符）后输出；不需要提权
+- `rollback <版本>`：提权后按 `jdk-<版本>_*` 匹配、以 `ftCreationTime` 取最新条目；`.original_path` 缺失返回 `4`；原路径已存在返回 `2`；父目录用递归辅助函数创建，失败返回 `3`
+- 恢复：`MoveFileW` 优先；失败则 `ShellExecuteExW(runas)` 执行 `xcopy /E /I /Y` 并等待退出码，成功后删除回收站副本
+- 最后删除 `.original_path`、强制重扫刷新缓存
+
+### 3.9 shell / version / help
+
+- `shell`：`ShellExecuteW(cmd.exe, "/k \"<exeDir>\\jmt.exe\"")` 打开新窗口，再用 `WriteConsoleInputW` 向当前控制台注入 `exit\r`，让旧窗口自行退出
+- `version`：`PrintInfo(L"JMT v1.7 (build 2026.07.13)")`（硬编码）
+- `help`：无参数打印分组帮助；`help <命令>` 先 `registry_.findCommand` 取 `getHelp()`，再对 `search` / `download` / `remove` / `data` / `rollback` 追加子命令说明；未知命令提示错误但返回 `0`
+
+---
+
+## 4. 服务层（jdk/）
+
+### 4.1 JdkScanService — 扫描与缓存
 
 ```cpp
-static std::wstring normalize(const std::wstring& path);    // 小写+去尾斜杠
-static bool arePathsEqual(const std::wstring& a, const std::wstring& b);
-static std::vector<std::wstring> splitPath(const std::wstring& path);  // 按分号拆分
-static std::vector<std::wstring> removeEntries(..., const std::wstring& toRemove);
-static std::vector<std::wstring> addUniqueEntry(..., const std::wstring& newEntry);
+static std::vector<std::pair<std::wstring, std::wstring>> scanJdks(
+        bool force, const std::wstring& cachePath, bool silent = false);
+static bool isValidJdk(const std::wstring& path);
+static std::wstring extractVersion(const std::wstring& path);
+static void writeCache(const std::vector<std::pair<std::wstring, std::wstring>>& jdks,
+                       const std::wstring& cachePath);
 ```
 
-- 保留 `%VAR%` 展开形式不变
-- 标准化比较用于去重
+**合法性校验** `isValidJdk`：目录名为 `jre` 直接排除；必须同时存在 `bin\java.exe`、`bin\javac.exe` 和 `lib` 目录。
 
-### 6.3 ElevationHelper — 提权
+**版本提取** `extractVersion`：
+
+1. 读 `<path>\release`，正则 `JAVA_VERSION="(\d+)(?:\.(\d+))?`；主版本为 `1` 时取次版本（`1.8.0_202` → `8`）
+2. 回退路径匹配 `jdk(?:1\.(\d+)|[-_]?(\d+))`，覆盖 `jdk1.8.0_202` / `jdk-17.0.2` / `jdk17` / `openjdk-11.0.2`
+3. 都匹配不到返回空串（该目录不会被收录）
+
+**扫描策略** `scanJdks`：
+
+- `force == false`：先 `FileLock` 独占缓存文件 → `ReadFileText` 逐行 `版本号|路径` → 逐条 `isValidJdk` 校验；无效条目被剔除，条目数与行数不一致时立即重写缓存并返回
+- 否则全盘扫描：先扫常见目录（`C:\Program Files\Java`、`C:\Program Files (x86)\Java`、`C:\jdk`、`D:\Java`、`E:\Java`、`D:\jdk`），再遍历 `GetAvailableDrives()`（仅 `DRIVE_FIXED`）根目录，递归深度 3 层
+- 排除目录集合：`C:\Windows`、`C:\ProgramData`、`C:\System Volume Information`、`$Recycle.Bin`、`System Volume Information`、`Recovery`、`Temp`
+- 同版本去重（`std::set<std::wstring> seen`，先到先得），结束后 `writeCache`；`silent == false` 时逐条打印「找到 JDK: <路径>」
+
+**缓存写入** `writeCache`：`FileLock::tryLock()` 加锁后 `writeAllText`，内容是 `版本号|路径\n` 拼接（UTF-16 LE 原始宽字符、无 BOM）。读路径统一走 `system/utils.hpp` 的 `ReadFileText`，它按「UTF-16 BOM → UTF-16 启发式 → UTF-8 → ANSI」顺序解码，因此缓存与手改文件都能读。
+
+### 4.2 JavaEnvService — PATH 中的 JDK 条目
+
+```cpp
+static bool setCurrentJdk(const std::wstring& jdkPath, EnvTarget target = EnvTarget::Auto);
+static bool clearCurrentJdk(EnvTarget target = EnvTarget::Auto);
+static std::wstring getCurrentVersion();
+static void removeOracleJavaPath(EnvTarget target = EnvTarget::Auto);
+static void restoreOracleJavaPath(EnvTarget target = EnvTarget::Auto);
+```
+
+**条目识别**（内部自由函数 `IsJdkBinPath`）：忽略大小写、忽略末尾 `\` / `/` 后，要求路径以 `bin` 结尾且整体包含 `jdk`。
+
+**setCurrentJdk**：读 PATH → 过滤掉所有 JDK bin 条目 → `removeOracleJavaPath` → 重新读取 PATH 再过滤一次（防止不彻底）→ `addUniqueEntry` 追加 `<jdkPath>\bin` → 用 `;` 重新拼接 → `RegistryOperator::setPath`。
+
+**clearCurrentJdk**：过滤掉所有 JDK bin 条目后写回，再调用 `restoreOracleJavaPath`（仅当 `C:\Program Files\Common Files\Oracle\Java\javapath` 目录存在且未在 PATH 中时才追加）。
+
+**getCurrentVersion**：遍历 PATH，对首个匹配 JDK bin 的条目用 `jdk(?:1\.(\d+)|[-_]?(\d+))` 提取版本号；没有则返回空串。该函数在 `search` 中用于判断「PATH 是否已有 JDK」。
+
+### 4.3 JmtPathService — 自身 PATH 注册
+
+```cpp
+static bool registerJmtPath(const std::wstring& exeDir, EnvTarget target = EnvTarget::Auto);
+```
+
+先 `removeEntries` 删除与 `exeDir` 相等的旧条目，再 `addUniqueEntry` 追加，写回并广播。成功时输出 `PrintDebug` 日志（仅 Debug 构建可见）。
+
+### 4.4 JdkDownloadService — 下载与安装
+
+```cpp
+static std::wstring downloadAndInstall(const std::wstring& version, const std::wstring& installRoot = L"");
+static std::wstring downloadFromMirror(const std::wstring& version, const std::wstring& installRoot = L"");
+static std::wstring downloadFromOfficial(const std::wstring& version, const std::wstring& installRoot = L"");
+static void reloadMappings();
+```
+
+返回值语义：安装目录路径 / `L"EXE_DOWNLOADED"`（仅下载了 EXE，需手动安装）/ 空串（失败）。
+
+**映射管理**
+
+- `initBuiltinMappings()`：ZIP 源覆盖主版本 11~26（含各补丁版本），EXE 源覆盖主版本 6~13；数据源为华为云 `repo.huaweicloud.com` 与 `mirrors.huaweicloud.com`
+- `ensureExternalMappingFiles()`：创建/补齐 `.repo\jdk_zip_repo.txt`、`.repo\jdk_exe_repo.txt`；若检测到文件以 `FF FE` 开头（旧版遗留 UTF-16 LE）则删除重建；写入时用 `WriteFileText`（UTF-8 带 BOM），内容为注释头 + 内置 URL 列表
+- `loadExternalMappings()`：逐行读取（跳过空行与 `#` 注释），`ExtractVersionFromUrl` 用 `[/-](\d+)(?:\.\d+)*[/_-]` 提取主版本后追加到对应列表
+- `findZipUrl` / `findExeUrl`：只返回该版本列表的**第 0 条** URL
+- `isDemoPackage`：URL 含 `-demos` 时给出警告（仅提示，不跳过）
+
+**安装路径**：`installRoot` 为空时用 `GetInstallRoot()`——从 `D:` 依次到 `Z:` 尝试 `Program Files\Java`，返回第一个已存在或创建成功的目录，全部失败则落地 `C:\Program Files\Java`；目标目录为 `<root>\jdk-<主版本>`。若目标目录已是合法 JDK 则直接返回，不重复下载。
+
+**下载引擎**（`DownloadFile`）
+
+1. `DownloadFileWithCurl`：`SearchPathW` 找 `curl.exe`（找不到回退 `C:\Windows\System32\curl.exe`），执行 `-L --retry 3 -o <目标文件> <URL> --progress-bar`，非 0 退出码即失败并删除半成品
+2. 回退 `DownloadFileWithMultiThread`：`MultiThreadDownloader`，4 连接 / 60 秒超时 / 重试 3 次；额外做体积（≥ 1 MB）与 ZIP 魔数（`PK\x03\x04`）校验
+
+**解压与修复**：`ExtractZip` 调 `powershell -Command "Expand-Archive -Path ... -DestinationPath ... -Force"`（`CREATE_NO_WINDOW`）；解压后若不是合法 JDK，则 `FixNestedJdkDirectory` 检查「只存在一个子目录且该子目录是合法 JDK」，是则把内容上移并删除空壳目录。
+
+**官方回退**：`GetOfficialDownloadInfo` 请求 `https://api.adoptium.net/v3/binary/latest/<版本>/ga/windows/x64/jdk/hotspot/normal/eclipse`，禁用自动重定向（`WINHTTP_DISABLE_REDIRECTS`），收到 3xx 后从 `Location` 头取真实下载地址与文件名。
+
+---
+
+## 5. 系统与基础设施
+
+### 5.1 RegistryOperator — 注册表环境变量
+
+```cpp
+static bool writeEnvString(const std::wstring& key, const std::wstring& value, EnvTarget target = EnvTarget::Auto);
+static std::wstring readEnvString(const std::wstring& key, EnvTarget target = EnvTarget::Auto);
+static bool deleteEnvString(const std::wstring& key, EnvTarget target = EnvTarget::Auto);
+static std::wstring getPath(EnvTarget target);
+static bool setPath(const std::wstring& path, EnvTarget target);
+static std::vector<std::wstring> enumerateEnvValueNames(EnvTarget target);
+```
+
+- 根键：`EnvTarget::SystemOnly → HKEY_LOCAL_MACHINE`，`UserOnly → HKEY_CURRENT_USER`，`Auto` 先系统后用户
+- 子键固定为 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`（对 `HKCU` 而言该路径不存在，见 10.4）
+- 值类型：`REG_EXPAND_SZ`，读取时接受 `REG_EXPAND_SZ` 与 `REG_SZ`
+- `Auto` 模式在系统写入失败后自动尝试用户分支，因此失败会静默返回 `false`，调用方需自行处理
+- 写/删成功后调用 `BroadcastEnvironmentChange()`：`SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, L"Environment", SMTO_ABORTIFHUNG, 10000)`；首次返回 0（超时/失败）时 `Sleep(500)` 后用 5 秒超时重试一次，两次都失败只写 `PrintDebug` 日志，不影响注册表结果
+
+### 5.2 PathUtils — PATH 字符串处理
+
+```cpp
+static std::wstring normalize(const std::wstring& path);   // 去尾部分隔符 + 转小写
+static bool arePathsEqual(const std::wstring& a, const std::wstring& b);
+static std::vector<std::wstring> splitPath(const std::wstring& path);
+static std::vector<std::wstring> removeEntries(const std::vector<std::wstring>& entries,
+                                               const std::wstring& toRemove);
+static std::vector<std::wstring> addUniqueEntry(const std::vector<std::wstring>& entries,
+                                                const std::wstring& newEntry);
+```
+
+- `splitPath` 跳过空项，保留 `%VAR%` 原样（不做环境变量展开）
+- 比较只统一大小写与尾部分隔符，**不统一 `/` 与 `\`**（已知限制，单元测试已固化该语义）
+- 只做字符串级增删，注册表读写由 `RegistryOperator` 负责
+
+### 5.3 ElevationHelper — 提权
 
 ```cpp
 static bool IsElevated();
 static bool RelaunchElevated(const std::wstring& commandLine);
-static bool RelaunchElevatedAndWait(const std::wstring& commandLine, int& exitCode);
 ```
 
-- `IsElevated`：`OpenProcessToken` + `TokenElevation`
-- `RelaunchElevated`：`ShellExecuteW(runas)` 异步启动
-- `RelaunchElevatedAndWait`：等待子进程结束返回退出码
+- `IsElevated`：`OpenProcessToken(TOKEN_QUERY)` + `GetTokenInformation(TokenElevation)`
+- `RelaunchElevated`：把当前 exe 路径与参数拼成 `cmd /c "<exe> <args> & pause"`，以 `runas` 通过 `ShellExecuteW` 异步启动；返回 `HINSTANCE > 32` 表示成功。父进程随后 `return 0`，实际命令在新控制台窗口中执行
 
-### 6.4 FileLock — 文件锁
+### 5.4 FileLock — 跨进程文件锁
 
-基于 `CreateFileW` 的互斥锁，用于缓存文件并发保护。
+`CreateFileW(OPEN_ALWAYS, FILE_SHARE_READ | FILE_SHARE_WRITE)` + `LockFileEx`（`LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY`）实现非阻塞互斥；`writeAllText` 要求已持锁，`SetFilePointer` 归零 + `SetEndOfFile` 截断后写入 UTF-16 LE 内容，用于 `.jmt_cache`。
+
+### 5.5 system/utils — 文件与字符串工具
+
+`GetExeDirectory()`、`GetAvailableDrives()`（仅固定盘）、`IsDirectory()` / `IsFile()`、`JoinPath()`、`ReadFileText()`（多编码嗅探）、`WriteFileText()`（UTF-8 带 BOM + 覆盖写）、`ToWideString()`（ANSI → 宽字符）。控制台初始化 `InitConsole()` 属于 `console/color_print`。
+
+### 5.6 MultiThreadDownloader — WinHTTP 分片下载
+
+```cpp
+void setConnections(int);   // 1~32，默认 4
+void setTimeout(int);       // ≥ 5 秒，默认 30（调用方传 60）
+void setRetryCount(int);    // ≥ 0，默认 3
+bool download(const std::wstring& url, const std::wstring& destPath,
+              ProgressCallback onProgress = nullptr, ErrorCallback onError = nullptr);
+```
+
+- 先 `HEAD` 取 `Content-Length`；拿不到或文件 < 10 MB 时降为单连接
+- 按连接数均分字节区间，`Range: bytes=start-end` 分片下载到 `%TEMP%\jmt_part_<n>.tmp`，每片带重试与退避（`Sleep(1000 * (retry + 1))`）
+- 线程间用 `std::mutex` 保护进度；分片启动前插入 0~300 ms 随机抖动
+- 全部完成后按 `index` 顺序 `mergeParts` 合并到目标文件，随后清理分片；任一分片失败或校验不通过则整体失败并清理
+- 进度通过 `ProgressCallback` 回调（百分比 + 已下载字节），但**不计算速度**（`speed` 恒为 0）
+
+### 5.7 console 模块
+
+- `color_print.cpp`：`InitConsole()` 设置代码页 UTF-8 并在支持时开启虚拟终端；`PrintSuccess/PrintError/PrintInfo/PrintWarning` 用 ANSI 颜色 + `WriteConsoleW` 输出，`PrintDebug` 仅在 `_DEBUG` 构建生效；`PrintProgress` 覆盖当前行输出
+- `console_progress.cpp`：`ConsoleProgress::ClearLine()` 用空格填充当前行并复位光标，供扫描结束清理进度行
+- `repl_engine.cpp`：交互循环（banner、`std::getline(std::wcin, line)`、`SetConsoleCtrlHandler` 捕获 `CTRL_C_EVENT` 后重显提示符、`exit` / `quit` 退出、未知命令提示）；命令返回非 0 时用 `PrintDebug` 输出返回码
+- `repl_utils.cpp`：`splitCommandLine` 按空格切分并支持双引号包裹
 
 ---
 
-## 7. 数据流与典型场景
+## 6. 数据流与典型场景
 
-### 7.1 `jmt search`
+### 6.1 `jmt search`
 
 ```
-main → SearchCommand::execute()
-  → JdkScanService::scanJdks(force, cachePath)
-    → [缓存命中] 读取 .jmt_cache，逐条校验，返回
-    → [缓存未命中/force] 扫描全部驱动器
-    → writeCache()
+main → 需要管理员 → SearchCommand::execute
+  → JdkScanService::scanJdks(force, cache)
+      [缓存命中] FileLock → ReadFileText → 逐条 isValidJdk 校验（失效则重写缓存）
+      [否则]     常见目录 + 固定盘根目录递归 3 层 → 同版本去重 → writeCache
   → JavaEnvService::getCurrentVersion()
-    → [PATH 已有 JDK] 输出当前版本，不切换
-    → [PATH 无 JDK] setCurrentJdk(最大版本)
+      [非空] 报告当前版本，不改环境变量
+      [空]   max_element(版本) → setCurrentJdk(路径, Auto)
+                 ├─ 过滤所有 IsJdkBinPath 条目
+                 ├─ removeOracleJavaPath
+                 ├─ 追加 <path>\bin
+                 └─ RegistryOperator::setPath → WM_SETTINGCHANGE（失败重试）
 ```
 
-### 7.2 `jmt use 21`
+### 6.2 `jmt use 21`
 
 ```
-main → UseCommand::execute("21")
-  → 提权检查
-  → JdkScanService::scanJdks() 获取列表
-  → 查找版本 21
-  → JavaEnvService::setCurrentJdk(path)
-    → 删除所有 IsJdkBinPath 条目
-    → 移除 Oracle javapath
-    → 添加 <path>\bin
-    → 广播 WM_SETTINGCHANGE
+main（需要管理员）→ UseCommand::execute(["use","21"])
+  → scanJdks(false, cache, silent=true) → 精确匹配版本 "21"，未命中返回 2
+  → JavaEnvService::setCurrentJdk(path, EnvTarget::Auto) → 失败返回 3
+  → 提示重启终端
 ```
 
-### 7.3 `jmt download 17`
+### 6.3 `jmt download 17`
 
 ```
-main → DownloadCommand::execute()
-  → 提权检查
-  → 参数解析：[--mirror | exe | java | 默认]
-  → 检查是否已存在 → 确认覆盖 → 移至回收站 → 切换 PATH
+main（需要管理员）→ DownloadCommand::execute
+  → 解析参数（--mirror / exe / java）→ 主版本号提取
+  → scanJdks(false)：已存在则询问覆盖
+        确认 → MoveToTrash 旧目录（.trash\jdk-17_<时间戳> + .original_path）
+             → 更新缓存 → 当前版本被删则切最大版本或清空 PATH → 删 JAVA_HOME17
   → JdkDownloadService::downloadAndInstall("17")
-    → findZipUrl("17") → 尝试镜像 ZIP
-    → 失败 → findExeUrl("17") → 尝试镜像 EXE
-    → 失败 → GetOfficialDownloadInfo("17") → 官方 ZIP
-    → ExtractZip → FixNestedJdkDirectory → 返回安装路径
-  → 扫描缓存 → 自动设置当前版本
+       1) 镜像 ZIP（findZipUrl 第 0 条）→ DownloadFile → ExtractZip → 校验/修复嵌套
+       2) 镜像 EXE（findExeUrl 第 0 条）→ 下载到 .temp → 返回 EXE_DOWNLOADED
+       3) 官方 Adoptium API → 解析 307 Location → ZIP → 解压 → 校验/修复
+  → scanJdks(true) 强制重扫 → setCurrentJdk(新版本)
 ```
 
-### 7.4 `jmt remove 17`
+### 6.4 `jmt remove 17`
 
 ```
-main → RemoveCommand::execute(["remove", "17"])
-  → 提权检查
-  → 查找 JDK "17"
-  → JavaEnvService::getCurrentVersion()
-    → [是当前版本] 切换到最大版本 / 清除 PATH
-    → [非当前版本] 从 PATH 中删除该版本 bin 路径
-  → MoveFileW → .trash\jdk-17_<时间戳>
-  → 写入 .original_path 元数据
-  → 更新缓存
+main（需要管理员）→ RemoveCommand::execute（解析 --user/--sys）
+  → scanJdks(false)（空则 force 重扫）→ 定位版本 17，未命中返回 2
+  → 当前版本 == 17 ?
+       是 → 剩余版本取最大 → setCurrentJdk；无剩余 → clearCurrentJdk
+       否 → 从 PATH 移除 <jdkPath>\bin
+  → MoveFileW → .trash\jdk-17_<时间戳>（跨卷则复制 + 删除）
+  → 写 .original_path → 更新缓存 → 删除 JAVA_HOME17
 ```
 
-### 7.5 `jmt data input`
+### 6.5 `jmt rollback 17`
 
 ```
-main → DataCommand::execute(["data", "input"])
-  → 提权检查
-  → 读取 .data\ver_out.txt
-  → 逐行解析 version|path
-  → 每项：isValidJdk → [已存在]跳过 | [不存在]询问 → downloadAndInstall
-  → 强制刷新缓存
+main → RollbackCommand::execute（list 免提权，其余提权）
+  → 匹配 .trash\jdk-17_* 并按 ftCreationTime 取最新
+  → 读 .original_path → CleanPath → 原路径已存在则返回 2
+  → 递归创建父目录 → MoveFileW 或提权 xcopy /E /I /Y
+  → 删除 .original_path → scanJdks(true) 刷新缓存
 ```
 
-### 7.6 `jmt rollback 17`
+### 6.6 `jmt data input`
 
 ```
-main → RollbackCommand::execute(["rollback", "17"])
-  → 提权检查
-  → 在 .trash\ 下查找 jdk-17_* 目录
-  → 读取 .original_path 获取原始路径
-  → MoveFileW 恢复 / xcopy 提权复制
-  → 强制刷新缓存
+main（不提权）→ DataCommand::execute(["data","input"])
+  → 命令内提权 → 读 .data\ver_out.txt → 逐行 版本|路径
+  → isValidJdk(path) ? 跳过 : 询问 → downloadAndInstall(版本, 父目录)
+  → 统计并输出汇总（有失败返回 4）→ 有成功安装则 scanJdks(true)
 ```
 
 ---
 
-## 8. 提权策略
+## 7. 提权策略
 
-### 8.1 需要提权的命令
+### 7.1 两处提权入口
 
-| 命令 | 原因 |
-|------|------|
-| `search` | 写注册表 PATH |
-| `use` | 写注册表 PATH |
-| `env` | 写注册表 PATH |
-| `remove` | 写注册表 PATH + 删文件 |
-| `download` | 写磁盘（安装 JDK） |
-| `data input` | 写磁盘 |
-| `rollback` | 写磁盘 |
+JMT 的提权判断存在于两个位置，最终行为一致（`runas` 重启自身，命令在新窗口执行，父进程返回 `0`）：
 
-### 8.2 免提权命令
+1. **`src/main.cpp` 单次命令模式**：`needsAdmin = (cmd == "use" || "env" || "remove" || "search" || "download")`，未提权且不满足豁免条件时提前重启。`rollback` 与 `data` 不在此列表，由命令内部处理；列表中的命令内部**也会**再检查一次（因此 REPL 与单次模式行为一致）。
+2. **命令内部**：`SearchCommand` / `UseCommand` / `EnvCommand` / `RemoveCommand` / `DownloadCommand` / `DataCommand(input)` / `RollbackCommand(非 list)` 各自在开头检查 `ctx.isElevated`。
 
-`list`, `version`, `shell`, `help`, `data output`, `rollback list`
+`main.cpp` 中的豁免分支只覆盖 `remove` 带 `--user`（以及一个永远不会命中的 `search --user` 分支），而 `RemoveCommand` 内部并无同样豁免，因此该豁免实际被命令层覆盖（见 10.4）。
 
-### 8.3 提权流程
+### 7.2 需要/不需要提权的命令
 
-1. 检查 `JmtContext::isElevated`
-2. 未提权：`ElevationHelper::RelaunchElevated()` 通过 `runas` 递归启动
-3. 父进程返回 0 退出
-4. 子进程（已提权）继续执行
+| 需要提权 | 免提权 |
+|----------|--------|
+| `search`、`use`、`env`、`remove`、`download`、`data input`、`rollback <版本>` | `list`、`version`、`shell`、`help`、`data output`、`rollback list`（只读注册表 PATH；`list` / `data output` 还会在校验缓存时顺带重写 `.jmt_cache`） |
 
-### 8.4 降级策略
+### 7.3 提权失败的降级
 
-`RegistryOperator` 在 `Auto` 模式下：
-- 先尝试系统 PATH（HKLM）
-- 若失败（无管理员权限）自动降级到用户 PATH（HKCU）
-- `--user` 参数强制使用用户 PATH
+- `RelaunchElevated` 返回 false：命令返回 `3`，提示「请手动以管理员身份运行」
+- `RegistryOperator` 在 `Auto` 模式下系统写失败会尝试用户分支；由于用户分支当前指向 `HKCU` 下不存在的键，实际不会成功（见 10.4），因此最终表现为写入失败并返回 `3`
 
 ---
 
-## 9. 异常处理与退出码
+## 8. 异常处理与退出码
 
-### 9.1 退出码
+### 8.1 退出码
 
-| 退出码 | 含义 |
-|--------|------|
-| 0 | 成功 |
-| 1 | 参数错误 / 未知命令 |
-| 2 | 未找到 JDK / 版本 |
-| 3 | 权限不足 |
-| 4 | 网络或磁盘错误 |
+| 退出码 | 含义 | 主要来源 |
+|--------|------|----------|
+| 0 | 成功 | 所有命令正常返回 |
+| 1 | 参数错误 / 未知命令 | `main.cpp` 未知命令；各命令缺参、版本格式错误 |
+| 2 | 未找到 JDK / 版本 / 条目 | `search`（无 JDK）、`list`、`use`、`remove`、`rollback`、`data` |
+| 3 | 权限不足 | 提权失败、注册表写入失败、目录创建失败 |
+| 4 | 网络或磁盘错误 | 下载/解压失败、回收站移动失败、写文件失败 |
 
-### 9.2 异常处理
+### 8.2 异常处理
 
-- 命令层 `try-catch` 捕获 `std::exception`，用 `PrintError` 输出
-- 退出码由命令 `execute()` 返回值决定
-- 未捕获异常由 `main` 兜底
+- `main.cpp` 与 `ReplEngine` 都用 `try-catch(const std::exception&)` 包住 `execute()`，用 `ToWideString(e.what())` + `PrintError` 输出；`main` 返回 `1`
+- 命令内部对文件系统操作使用 `try-catch` 并转换为 `4` / `3`
+- `fs::remove_all` 等清理操作失败降级为警告，不改变主流程退出码
+- REPL 中命令的非 0 返回码只通过 `PrintDebug` 提示（Debug 构建可见），不会中断会话
 
 ---
 
-## 10. 构建与部署
+## 9. 构建、测试与发布
 
-### 10.1 CMake 配置
+### 9.1 CMake 结构
+
+（以下摘自 `CMakeLists.txt`，略有精简）
 
 ```cmake
-cmake_minimum_required(VERSION 3.15)
-project(JMT LANGUAGES CXX RC)
+project(JMT LANGUAGES CXX RC)          # 需要 RC 编译 resources/app.rc
 set(CMAKE_CXX_STANDARD 17)
+option(JMT_BUILD_TESTS "构建 JMT 单元测试与集成测试" ON)
 
-# 静态链接 CRT
-set_property(TARGET jmt PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
+add_library(jmt_core STATIC ${JMT_CORE_SOURCES})   # main.cpp 之外的全部源文件
+target_include_directories(jmt_core PUBLIC ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(jmt_core PUBLIC Shlwapi.lib Wininet.lib Advapi32.lib Winhttp.lib)
+target_compile_options(jmt_core PRIVATE /utf-8)
 
-# 编译选项
-target_compile_options(jmt PRIVATE /utf-8)
+add_executable(jmt src/main.cpp)
+target_link_libraries(jmt PRIVATE jmt_core)
+target_sources(jmt PRIVATE resources/app.rc)
 
-# 链接库
-target_link_libraries(jmt
-    Shlwapi.lib Wininet.lib Advapi32.lib Winhttp.lib
-)
+# MSVC：静态链接 CRT
+set_target_properties(jmt_core jmt PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded")
 ```
 
-### 10.2 构建命令
+测试目标在 `tests/CMakeLists.txt` 存在时才会注册（`tests/` 被 `.gitignore` 排除，仓库里可能不存在）。
+
+### 9.2 构建命令
 
 ```bash
-cmake -S . -B build              # 配置
-cmake --build build --config Release   # Release 构建
-cmake --build build --config Debug     # Debug 构建
+cmake -S . -B build -G Ninja        # 或使用 CLion 默认的 cmake-build-debug
+cmake --build build                 # Ninja 单配置
+cmake --build build --config Release  # 多配置生成器（VS）
 ```
 
-输出 `jmt.exe`，无外部 DLL 依赖。
+MSVC 环境需先执行 `vcvars64.bat`（或由 IDE 注入），否则会报找不到标准库头文件。
 
-### 10.3 源文件清单
+### 9.3 测试
 
-```
-src/
-├── main.cpp
-├── app.rc                          # 版本资源
-├── core/
-│   ├── command_base.hpp
-│   ├── command_registry.cpp/hpp
-│   └── jmt_context.hpp
-├── command/                        # 12 个命令
-│   ├── search_command.cpp/hpp
-│   ├── list_command.cpp/hpp
-│   ├── use_command.cpp/hpp
-│   ├── env_command.cpp/hpp
-│   ├── remove_command.cpp/hpp
-│   ├── download_command.cpp/hpp
-│   ├── version_command.cpp/hpp
-│   ├── shell_command.cpp/hpp
-│   ├── help_command.cpp/hpp
-│   ├── rollback_command.cpp/hpp
-│   └── data_command.cpp/hpp
-├── service/
-│   ├── jdk_scan_service.cpp/hpp
-│   ├── java_env_service.cpp/hpp
-│   ├── jdk_download_service.cpp/hpp
-│   └── jmt_path_service.cpp/hpp
-├── infrastructure/
-│   ├── registry_operator.cpp/hpp
-│   ├── path_utils.cpp/hpp
-│   ├── file_lock.cpp/hpp
-│   └── elevation_helper.cpp/hpp
-├── network/
-│   └── multi_thread_downloader.cpp/hpp
-├── print/
-│   ├── color_print.cpp/hpp
-│   └── console_progress.cpp/hpp
-├── repl/
-│   ├── repl_engine.cpp/hpp
-│   └── repl_utils.cpp/hpp
-└── utils/
-    ├── utils.cpp/hpp
-    └── string_helper.cpp/hpp
+```bash
+ctest --test-dir build --output-on-failure
+build/jmt_tests.exe --list          # 列出全部用例
+build/jmt_tests.exe --suite path_utils
 ```
 
-### 10.4 运行时目录结构
+| 套件 | 内容 |
+|------|------|
+| `unit.string_helper` | 分隔符切分、忽略大小写比较 |
+| `unit.path_utils` | 标准化、比较、拆分、去重（含 `/` 与 `\` 不统一的已知限制） |
+| `unit.version_parse` | `jdk-17.0.2` / `jdk-21` / `jdk1.8.0_202` / `openjdk-11.0.2` / 无版本路径 |
+| `integration.cli_smoke` | 启动真实 `jmt.exe` 断言 `version`=0、`help`=0、未知命令=1（超时 120 秒） |
 
-```
-jmt.exe 同级目录：
-├── .jmt_cache              # JDK 扫描缓存（自动生成）
-├── .trash/                  # 回收站（删除时移入）
-├── .temp/                   # 下载临时文件
-├── .repo/                   # 外部镜像源映射（自动生成）
-│   ├── jdk_zip_repo.txt
-│   └── jdk_exe_repo.txt
-└── .data/                   # 导出数据
-    └── ver_out.txt          # data output 命令生成
-```
+框架为 `tests/test_framework.hpp`：`JMT_TEST(套件, 用例)` 自动注册、`JMT_CHECK` / `JMT_CHECK_EQ` 断言失败即抛异常并带文件行号，入口 `tests/test_main.cpp` 汇总通过/失败数。
 
-### 10.5 部署
+编写约定：`tests/unit/` 不得触碰注册表、PATH、网络、缓存文件；`tests/integration/` 只允许调用只读命令，避免污染开发机环境。
 
-复制 `jmt.exe` 到任意目录，运行 `jmt env` 注册 PATH。
+### 9.4 发布约定
+
+`.gitignore` 的规则体现了本仓库的发布口径：
+
+- 发布：`src/`、`include/`、`resources/`、`CMakeLists.txt`、`README.md`、已编译的 `cmake-build-*/jmt.exe`
+- 不发布：`.idea/`、构建中间产物、`CLAUDE.md`、`本次需求文档.txt`、`*.docx`、`tests/`，以及运行期产物 `.jmt_cache` / `.repo/` / `.temp/` / `.trash/` / `.data/`
 
 ---
 
-## 11. 附录
+## 10. 附录
 
-### 11.1 编码规范
+### 10.1 编码规范
 
 | 项目 | 规范 |
 |------|------|
 | 文件名 | 小写下划线（`java_env_service.cpp`） |
 | 类名 | 大驼峰（`JavaEnvService`） |
 | 函数 | 小驼峰（`setCurrentJdk`） |
-| 变量 | 小驼峰 |
-| 常量 | `k` 前缀 + 大驼峰 |
-| 字符串 | 全部 `std::wstring`，字面量 `L""` |
-| 头文件 | `#pragma once` |
-| 内存 | 禁止裸 `new/delete`，使用智能指针 |
-| HANDLE | RAII 包装 |
-| Windows API | 显式使用 `W` 版本 |
+| 变量 | 小驼峰；成员变量带尾随下划线（`zipMap_`） |
+| 字符串 | 一律 `std::wstring`，字面量加 `L""` |
+| 头文件 | `#pragma once`；只放声明，实现集中在 `src/` |
+| 包含路径 | 模块前缀形式（`"jdk/..."`），`include/` 为搜索根 |
+| Windows API | 显式使用 `W` 版本；句柄用 RAII 或显式 `CloseHandle` |
+| 注释 | 中文注释，说明「为什么」而不是复述代码 |
 
-### 11.2 资源映射文件格式
+### 10.2 文件格式约定
 
-`.repo/jdk_zip_repo.txt` 和 `.repo/jdk_exe_repo.txt`：
-- 每行一个 URL
-- `#` 开头为注释
-- 版本号从 URL 中自动提取（正则匹配主版本号）
-- 程序启动时若文件不存在，自动从内置映射生成
-- 外部 URL 追加到内置映射之后
+| 文件 | 位置 | 编码 | 格式 |
+|------|------|------|------|
+| `.jmt_cache` | exe 同级 | UTF-16 LE（无 BOM，`FileLock::writeAllText` 写入） | 每行 `版本号\|绝对路径` |
+| `.repo/jdk_zip_repo.txt` | exe 同级 | UTF-8 带 BOM（`WriteFileText`） | 每行一个 URL，`#` 为注释；检测到 UTF-16 BOM 时删除重建 |
+| `.repo/jdk_exe_repo.txt` | exe 同级 | 同上 | 同上 |
+| `.data/ver_out.txt` | exe 同级 | UTF-8 带 BOM | 每行 `版本号\|安装路径` |
+| `.trash/jdk-<版本>_<时间戳>/.original_path` | exe 同级 | UTF-8 带 BOM | 原始安装路径字符串 |
 
-### 11.3 缓存格式
+读取统一经 `ReadFileText`，它按 UTF-16 BOM → UTF-16 启发式（奇数位多为 `0x00`）→ UTF-8 → 当前代码页的顺序解码，因此历史遗留编码文件通常仍可读。
 
-`.jmt_cache`：UTF-16 LE 编码，每行 `版本号|绝对路径`
+### 10.3 命令速查
 
-### 11.4 命令速查
+| 场景 | 命令 |
+|------|------|
+| 首次部署 | `jmt env` |
+| 扫描并自动配置 | `jmt search` / `jmt search --force` |
+| 查看版本列表 | `jmt list` |
+| 切换版本 | `jmt use 21` |
+| 默认策略下载 | `jmt download 17` |
+| 仅镜像下载 | `jmt download 17 --mirror` |
+| 官方源下载 | `jmt download 17 java` |
+| 导出 / 导入列表 | `jmt data output` / `jmt data input` |
+| 删除版本 | `jmt remove 17` |
+| 查看 / 恢复回收站 | `jmt rollback list` / `jmt rollback 17` |
+| 清理下载缓存 | `jmt remove temp` |
+| 清空回收站 | `jmt remove trash` |
+| 注销 JMT 自身 PATH | `jmt remove env` |
+| 完全清理 | `jmt remove all` |
+| 新窗口交互 | `jmt shell` |
 
-| 命令 | 示例 | 说明 |
-|------|------|------|
-| search | `jmt search --force` | 强制重扫并配置 |
-| list | `jmt list` | 列出版本 |
-| use | `jmt use 21` | 切换至 JDK 21 |
-| env | `jmt env` | 注册 PATH |
-| remove env | `jmt remove env` | 移除自身 PATH |
-| remove all | `jmt remove all` | 完全清理 |
-| remove temp | `jmt remove temp` | 删除下载缓存 |
-| remove trash | `jmt remove trash` | 清空回收站 |
-| remove 17 | `jmt remove 17` | 删除版本 17 |
-| download | `jmt download 21` | 下载并安装 |
-| download exe | `jmt download 8 exe` | 仅下载 EXE |
-| download --mirror | `jmt download 21 --mirror` | 镜像下载 |
-| download java | `jmt download 21 java` | 官方下载 |
-| data output | `jmt data output` | 导出列表 |
-| data input | `jmt data input` | 导入安装 |
-| rollback | `jmt rollback 17` | 恢复版本 |
-| rollback list | `jmt rollback list` | 查看可恢复版本 |
-| version | `jmt version` | 版本信息 |
-| shell | `jmt shell` | 新窗口交互 |
+### 10.4 已知问题与实现差异
+
+按影响面从高到低排列；修复时需要同步更新本文档与 `README.md`。
+
+| # | 位置 | 现象 | 影响 |
+|---|------|------|------|
+| 1 | `src/system/registry_operator.cpp`（`openEnvKey`） | 无论 `EnvTarget` 为何，子键固定为 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`；该相对路径在 `HKCU` 下不存在（用户环境变量实际在 `HKCU\Environment`） | `--user` / `--sys` 的用户分支、`Auto` 的自动降级全部失效；`remove env` 等仍打印成功提示（返回值被忽略） |
+| 2 | `include/console/color_print.hpp`（`PrintColored`） | 输出固定使用 `WriteConsoleW` | stdout 被重定向到文件或管道时没有任何输出，集成测试只能断言退出码 |
+| 3 | `src/jdk/jdk_download_service.cpp`（`findZipUrl` / `findExeUrl`） | 只取列表中第 0 条 URL | 每个内置版本的多个补丁 URL、以及追加在其后的外部 `.repo` 自定义源都不会被尝试；「多源回退」实际是「镜像 ZIP → 镜像 EXE → 官方」三层，而非同层多 URL 轮询 |
+| 4 | `src/command/download_command.cpp` | `exe` 参数只被识别后跳过，没有任何分支使用 | `jmt download 8 exe` 与默认策略等价，不会强制只下载 EXE |
+| 5 | `src/command/help_command.cpp` | `help <未知命令>` 打印错误后仍 `return 0` | 脚本无法通过退出码判断帮助参数是否有效 |
+| 6 | `src/main.cpp` | `remove --user` 的免提权分支被 `RemoveCommand` 内部的提权检查覆盖 | 免提权使用用户 PATH 的路径实际走不通（叠加问题 1） |
+| 7 | `src/console/color_print.cpp` | `PrintProgress` 以 `info.dwSize.X` 填充整行，未处理控制台换行/滚动边界 | 进度行在窗口边缘可能残留字符 |
+| 8 | `src/network/multi_thread_downloader.cpp` | `DownloadProgress.speed` 恒为 0 | 界面无法显示速度；`calcPercent` 在拿不到总大小时返回 `-1` |
+| 9 | `src/command/version_command.cpp` / `src/console/repl_engine.cpp` | 版本号与 banner 各自硬编码 | 升级版本需三处同步（含文档），无单一数据源 |
+| 10 | `resources/app.rc` | 只有图标，没有 `VERSIONINFO` 资源 | 文件属性页看不到版本信息，只能靠 `jmt version` |
+| 11 | `src/jdk/jdk_scan_service.cpp` | 同版本 JDK 只保留先扫描到的那一份（`seen` 去重）；扫描深度固定 3 层 | 多份同版本安装无法在 `list` 中共存；深层目录中的 JDK 不会被发现 |
+| 12 | `src/command/search_command.cpp` / `remove`/`download` 中的 `std::stoi(版本号)` | 版本号必须能转成整数 | 缓存中出现非数字版本号会抛出异常（由外层 `try-catch` 转换为退出码 1） |
+
+### 10.5 本地资料（不随仓库发布）
+
+- `jdk下载分析数据.txt`：镜像源可用性实测记录（南大 / 清华 TUNA / 华为云 / Adoptium 等），可作为扩充内置映射的参考
+- `本次需求文档.txt`：需求草稿（当前为空）
+- `CLAUDE.md`：面向 AI 协作工具的项目说明
 
 ---
 
-**文档版本**：V1.7  
-**最后更新**：2026-07-13  
+**文档版本**：V1.7（对应 `hotfix` 分支 `include/` / `src/` 模块化重构后的代码）
+**最后更新**：2026-09-16
 **版本对应**：JMT v1.7 (build 2026.07.13)

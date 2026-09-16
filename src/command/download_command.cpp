@@ -1,11 +1,11 @@
-#include "download_command.hpp"
-#include "../service/jdk_download_service.hpp"
-#include "../service/jdk_scan_service.hpp"
-#include "../service/java_env_service.hpp"
-#include "../infrastructure/path_utils.hpp"
-#include "../print/color_print.hpp"
-#include "../utils/utils.hpp"
-#include "../infrastructure/elevation_helper.hpp"
+#include "command/download_command.hpp"
+#include "jdk/jdk_download_service.hpp"
+#include "jdk/jdk_scan_service.hpp"
+#include "jdk/java_env_service.hpp"
+#include "system/path_utils.hpp"
+#include "console/color_print.hpp"
+#include "system/utils.hpp"
+#include "system/elevation_helper.hpp"
 #include <regex>
 #include <filesystem>
 #include <conio.h>
@@ -72,14 +72,13 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
     // 解析参数
     bool useMirror = false;
-    bool forceExe = false;
     bool forceOfficial = false;   // ← 新增标志
     std::wstring versionArg;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == L"--mirror") {
             useMirror = true;
         } else if (args[i] == L"exe") {
-            forceExe = true;
+            // 兼容旧参数：exe 当前与默认策略等价（见开发文档 10.4），此处仅做识别、跳过
         } else if (args[i] == L"java") {   // ← 识别 java 参数
             forceOfficial = true;
         } else {
