@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include "jdk/jdk_download_service.hpp"
+#include "common/java_version.hpp"
 #include "jdk/jdk_scan_service.hpp"
 #include "platform/output.hpp"
 #include "system/utils.hpp"
@@ -573,14 +574,16 @@ bool JdkDownloadService::officialDownloadInfo(const std::wstring& version, std::
 std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version,
                                                     const std::wstring& installRoot) {
     return executePlan(DownloadPlan::build(DownloadMode::Default, false,
-                                           zipUrlsFor(version), exeUrlsFor(version)),
+                                           filterUrlsForVersion(zipUrlsFor(version), version),
+                                           filterUrlsForVersion(exeUrlsFor(version), version)),
                        version, installRoot);
 }
 
 std::wstring JdkDownloadService::downloadFromMirror(const std::wstring& version,
                                                     const std::wstring& installRoot) {
     return executePlan(DownloadPlan::build(DownloadMode::MirrorOnly, false,
-                                           zipUrlsFor(version), exeUrlsFor(version)),
+                                           filterUrlsForVersion(zipUrlsFor(version), version),
+                                           filterUrlsForVersion(exeUrlsFor(version), version)),
                        version, installRoot);
 }
 
@@ -671,7 +674,8 @@ std::wstring JdkDownloadService::downloadFromOfficial(const std::wstring& versio
 }
 
 std::wstring JdkDownloadService::downloadInstallerOnly(const std::wstring& version) {
-    return executePlan(DownloadPlan::build(DownloadMode::Default, true, {}, exeUrlsFor(version)),
+    return executePlan(DownloadPlan::build(DownloadMode::Default, true, {},
+                                           filterUrlsForVersion(exeUrlsFor(version), version)),
                        version, L"");
 }
 
@@ -711,7 +715,9 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
             case DownloadStepKind::MirrorZip:
                 out_.line(OutputLevel::Info, L"尝试 ZIP 源" + order);
                 if (tryZipSource(step.url, version, targetDir)) {
-                    return targetDir;
+                    if (versionSatisfied(targetDir, version)) {
+                        return targetDir;
+                    }
                 }
                 break;
             case DownloadStepKind::MirrorExe: {
@@ -725,7 +731,9 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
             case DownloadStepKind::OfficialZip:
                 out_.line(OutputLevel::Info, L"尝试官方源" + order);
                 if (tryOfficialZip(version, targetDir)) {
-                    return targetDir;
+                    if (versionSatisfied(targetDir, version)) {
+                        return targetDir;
+                    }
                 }
                 break;
         }
@@ -821,3 +829,20 @@ bool JdkDownloadService::tryOfficialZip(const std::wstring& version, const std::
 
 // ---------- 静态初始化（在 main 中调用） ----------
 // 注意：需要在 main 或程序启动时调用一次 reloadMappings()
+
+bool JdkDownloadService::versionSatisfied(const std::wstring& targetDir, const std::wstring& requested) {
+    if (!JavaVersion::isFullVersionQuery(requested)) {
+        return true;   // 只给主版本时不校验具体补丁版本
+    }
+    const std::wstring installed = JdkScanService::extractVersion(targetDir);
+    if (installed.empty()) {
+        return true;   // 读不到版本信息（缺少 release）时不阻断安装
+    }
+    if (JavaVersion::parse(installed).matches(requested)) {
+        return true;
+    }
+    out_.line(OutputLevel::Warning,
+              L"该源提供的是 " + installed + L"，与请求的 " + requested + L" 不一致，放弃该源");
+    fs::remove_all(targetDir);
+    return false;
+}

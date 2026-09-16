@@ -34,3 +34,9 @@ struct DownloadPlan {
 
 // URL 是否为 demo 包（仅含示例代码，不能作为 JDK 使用）
 bool isDemoUrl(const std::wstring& url);
+
+// 按请求的版本过滤下载源：
+//   主版本请求（17）→ 返回全部候选；
+//   完整版本请求（17.0.2 / 8u202）→ 只保留 URL 里包含该版本串的源（可能为空）。
+std::vector<std::wstring> filterUrlsForVersion(const std::vector<std::wstring>& urls,
+                                               const std::wstring& requested);

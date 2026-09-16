@@ -59,6 +59,8 @@ private:
     bool tryZipSource(const std::wstring& url, const std::wstring& version, const std::wstring& targetDir);
     std::wstring tryExeSource(const std::wstring& url, const std::wstring& version, const std::wstring& targetDir);
     bool tryOfficialZip(const std::wstring& version, const std::wstring& targetDir);
+    // 完整版本请求时校验安装结果与请求是否一致（不一致则删除并放弃该源）
+    bool versionSatisfied(const std::wstring& targetDir, const std::wstring& requested);
 
     // 官方源（Adoptium API，手动解析 307 重定向）
     bool officialDownloadInfo(const std::wstring& version,

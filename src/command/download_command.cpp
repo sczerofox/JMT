@@ -8,6 +8,8 @@
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
 #include "app/env_scope.hpp"
+#include "common/java_version.hpp"
+#include "jdk/version_match.hpp"
 #include <regex>
 #include <filesystem>
 #include <conio.h>
@@ -80,34 +82,24 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
         return ExitCode::BadArgs;
     }
 
-    // 提取主版本号
-    std::wstring majorVersion;
-    std::wregex pattern(L"^(\\d+)");
-    std::wsmatch match;
-    if (std::regex_search(versionArg, match, pattern) && match.size() > 1) {
-        majorVersion = match[1].str();
-        if (majorVersion != versionArg) {
-            ctx.out->line(OutputLevel::Info, L"检测到具体版本号 " + versionArg + L"，将使用主要版本 " + majorVersion);
-        }
-    } else {
-        ctx.out->line(OutputLevel::Error, L"无效的版本号格式，请输入数字，如 17");
+    // 版本参数保留完整版本（17.0.2 / 8u202 都支持），只做合法性校验
+    const JavaVersion requested = JavaVersion::parse(versionArg);
+    if (!requested.valid()) {
+        ctx.out->line(OutputLevel::Error, L"无效的版本号格式，请输入如 17 或 17.0.2");
         return ExitCode::BadArgs;
     }
+    const std::wstring version = requested.raw;
+    ctx.out->line(OutputLevel::Info, L"目标版本: " + version);
 
-    // ----- 检查是否已存在该版本 -----
+    // ----- 检查是否已安装 -----
+    // 完整版本请求：精确到补丁版本；只给主版本时：该主版本下任意已安装版本
     auto jdks = ctx.scan->scanJdks(false, true);
-    bool exists = false;
-    std::wstring existingPath;
-    for (const auto& [ver, path] : jdks) {
-        if (ver == majorVersion) {
-            exists = true;
-            existingPath = path;
-            break;
-        }
-    }
+    const VersionMatch existing = JavaVersion::isFullVersionQuery(version)
+                                          ? resolveVersion(jdks, version, true)
+                                          : resolveVersion(jdks, version);
 
-    if (exists) {
-        ctx.out->line(OutputLevel::Warning, L"JDK " + majorVersion + L" 已安装在: " + existingPath);
+    if (existing.found) {
+        ctx.out->line(OutputLevel::Warning, L"JDK " + existing.version + L" 已安装在: " + existing.path);
         ctx.out->line(OutputLevel::Info, L"是否删除旧版本并重新下载安装？(y/n)");
         int ch = _getwch();
         if (ch != L'y' && ch != L'Y') {
@@ -118,8 +110,8 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
 
         // 将旧目录移动到回收站
         std::wstring trashPath;
-        if (!MoveToTrash(existingPath, majorVersion, ctx.paths.exeDir, trashPath)) {
-            ctx.out->line(OutputLevel::Error, L"移动旧版本到回收站失败，请手动删除 " + existingPath);
+        if (!MoveToTrash(existing.path, existing.version, ctx.paths.exeDir, trashPath)) {
+            ctx.out->line(OutputLevel::Error, L"移动旧版本到回收站失败，请手动删除 " + existing.path);
             return ExitCode::IoOrNetwork;
         }
         ctx.out->line(OutputLevel::Info, L"旧版本已移至回收站: " + trashPath);
@@ -127,12 +119,12 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
         // 从缓存中移除该版本
         auto newJdks = jdks;
         newJdks.erase(std::remove_if(newJdks.begin(), newJdks.end(),
-                                     [&](const auto& p) { return p.first == majorVersion; }), newJdks.end());
+                                     [&](const auto& p) { return p.second == existing.path; }), newJdks.end());
         ctx.scan->writeCache(newJdks);
 
         // ---- 更新 PATH：如果当前版本被删除，则切换到最大版本 ----
         std::wstring currentVer = ctx.env->getCurrentVersion();
-        if (currentVer == majorVersion) {
+        if (currentVer == existing.version) {
             ctx.out->line(OutputLevel::Info, L"当前 PATH 正使用该版本，正在切换到最大版本...");
             if (newJdks.empty()) {
                 // 无其他版本，清除 PATH 中的 JDK 路径
@@ -142,19 +134,20 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
                 }
                 ctx.out->line(OutputLevel::Info, L"已清除当前 JDK PATH（无其他版本）");
             } else {
-                auto maxIt = std::max_element(newJdks.begin(), newJdks.end(),
-                                              [](const auto& a, const auto& b) {
-                                                  return std::stoi(a.first) < std::stoi(b.first);
-                                              });
-                if (!ctx.env->setCurrentJdk(maxIt->second, scope.target)) {
+                const std::wstring maxVer = maxVersion(newJdks);
+                std::wstring maxPath;
+                for (const auto& [v, p] : newJdks) {
+                    if (v == maxVer) { maxPath = p; break; }
+                }
+                if (!ctx.env->setCurrentJdk(maxPath, scope.target)) {
                     ctx.out->line(OutputLevel::Error, L"切换到最大版本失败");
                     return ExitCode::PermissionDenied;
                 }
-                ctx.out->line(OutputLevel::Info, L"已切换至最大版本: " + maxIt->first);
+                ctx.out->line(OutputLevel::Info, L"已切换至最大版本: " + maxVer);
             }
         } else {
             // 当前 PATH 不是该版本，但为了安全，从 PATH 中删除该版本的 bin 路径（如果存在）
-            std::wstring binPath = JoinPath(existingPath, L"bin");
+            std::wstring binPath = JoinPath(existing.path, L"bin");
             std::wstring path = ctx.registry->readPath(scope.target);
             auto entries = PathUtils::splitPath(path);
             entries = PathUtils::removeEntries(entries, binPath);
@@ -167,7 +160,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
         }
 
         // 删除任何残留的 JAVA_HOME<version> 变量（向后兼容）
-        ctx.registry->deleteEnv(L"JAVA_HOME" + majorVersion, scope.target);
+        ctx.registry->deleteEnv(L"JAVA_HOME" + existing.version, scope.target);
         ctx.out->line(OutputLevel::Info, L"旧版本环境变量已清理");
     }
 
@@ -176,15 +169,15 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
 
     if (installerOnly) {
         // exe 参数优先：只下载 EXE 安装包到 .temp，不自动安装
-        installPath = ctx.download->downloadInstallerOnly(majorVersion);
+        installPath = ctx.download->downloadInstallerOnly(version);
     } else if (forceOfficial) {
         // 强制从官方下载（绕过镜像和 EXE）
-        installPath = ctx.download->downloadFromOfficial(majorVersion);
+        installPath = ctx.download->downloadFromOfficial(version);
     } else if (useMirror) {
-        installPath = ctx.download->downloadFromMirror(majorVersion);
+        installPath = ctx.download->downloadFromMirror(version);
     } else {
         // 默认：尝试镜像 ZIP，失败则回退官方 ZIP
-        installPath = ctx.download->downloadAndInstall(majorVersion);
+        installPath = ctx.download->downloadAndInstall(version);
     }
 
     if (installPath == L"EXE_DOWNLOADED") {
@@ -202,7 +195,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     auto updatedJdks = ctx.scan->scanJdks(true, true);
     bool foundNew = false;
     for (const auto& [v, p] : updatedJdks) {
-        if (p == installPath || v == majorVersion) { // 若路径匹配或版本匹配
+        if (p == installPath) { // 按安装路径匹配，避免把同主版本的其它补丁版本当成新装版本
             if (!ctx.env->setCurrentJdk(p, scope.target)) {
                 ctx.out->line(OutputLevel::Error, L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + v + L"'");
                 return ExitCode::PermissionDenied;
@@ -214,15 +207,16 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     }
     if (!foundNew && !updatedJdks.empty()) {
         // 若未找到新版本（可能名称不一致），则选择最大版本
-        auto maxIt = std::max_element(updatedJdks.begin(), updatedJdks.end(),
-                                      [](const auto& a, const auto& b) {
-                                          return std::stoi(a.first) < std::stoi(b.first);
-                                      });
-        if (!ctx.env->setCurrentJdk(maxIt->second, scope.target)) {
-            ctx.out->line(OutputLevel::Error, L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + maxIt->first + L"'");
+        const std::wstring fallbackVersion = maxVersion(updatedJdks);
+        std::wstring fallbackPath;
+        for (const auto& [v, p] : updatedJdks) {
+            if (v == fallbackVersion) { fallbackPath = p; break; }
+        }
+        if (!ctx.env->setCurrentJdk(fallbackPath, scope.target)) {
+            ctx.out->line(OutputLevel::Error, L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + fallbackVersion + L"'");
             return ExitCode::PermissionDenied;
         }
-        ctx.out->line(OutputLevel::Success, L"JDK 安装成功，已自动切换至最大版本 " + maxIt->first);
+        ctx.out->line(OutputLevel::Success, L"JDK 安装成功，已自动切换至最大版本 " + fallbackVersion);
     } else {
         // 已设置成功
     }

@@ -1,5 +1,7 @@
 #include "jdk/download_plan.hpp"
 
+#include "common/java_version.hpp"
+
 #include <algorithm>
 #include <cctype>
 
@@ -8,6 +10,20 @@ bool isDemoUrl(const std::wstring& url) {
     std::transform(lowerUrl.begin(), lowerUrl.end(), lowerUrl.begin(),
                    [](wchar_t ch) { return static_cast<wchar_t>(::towlower(ch)); });
     return lowerUrl.find(L"-demos") != std::wstring::npos;
+}
+
+std::vector<std::wstring> filterUrlsForVersion(const std::vector<std::wstring>& urls,
+                                               const std::wstring& requested) {
+    if (!JavaVersion::isFullVersionQuery(requested)) {
+        return urls;   // 只给了主版本：全部候选按顺序尝试
+    }
+    std::vector<std::wstring> matched;
+    for (const auto& url : urls) {
+        if (url.find(requested) != std::wstring::npos) {
+            matched.push_back(url);
+        }
+    }
+    return matched;
 }
 
 DownloadPlan DownloadPlan::build(DownloadMode mode,
