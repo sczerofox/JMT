@@ -7,7 +7,7 @@ ExitCode EnvCommand::execute(const std::vector<std::wstring>& args, AppContext& 
     // 已提权，继续执行原有逻辑
 
     // 已提权，执行原有逻辑
-    if (!JmtPathService::registerJmtPath(ctx.paths.exeDir, EnvTarget::Auto)) {
+    if (!ctx.jmtPath->registerJmtPath(ctx.paths.exeDir, EnvTarget::Auto)) {
         PrintError(L"注册 PATH 失败，请以管理员身份运行或使用 --user");
         return ExitCode::PermissionDenied;
     }

@@ -3,6 +3,7 @@
 #include "jdk/jdk_scan_service.hpp"
 #include "jdk/java_env_service.hpp"
 #include "system/path_utils.hpp"
+#include <windows.h>
 #include "console/color_print.hpp"
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
@@ -91,7 +92,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     }
 
     // ----- 检查是否已存在该版本 -----
-    auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
+    auto jdks = ctx.scan->scanJdks(false, true);
     bool exists = false;
     std::wstring existingPath;
     for (const auto& [ver, path] : jdks) {
@@ -124,15 +125,15 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
         auto newJdks = jdks;
         newJdks.erase(std::remove_if(newJdks.begin(), newJdks.end(),
                                      [&](const auto& p) { return p.first == majorVersion; }), newJdks.end());
-        JdkScanService::writeCache(newJdks, ctx.paths.cacheFile);
+        ctx.scan->writeCache(newJdks);
 
         // ---- 更新 PATH：如果当前版本被删除，则切换到最大版本 ----
-        std::wstring currentVer = JavaEnvService::getCurrentVersion();
+        std::wstring currentVer = ctx.env->getCurrentVersion();
         if (currentVer == majorVersion) {
             PrintInfo(L"当前 PATH 正使用该版本，正在切换到最大版本...");
             if (newJdks.empty()) {
                 // 无其他版本，清除 PATH 中的 JDK 路径
-                if (!JavaEnvService::clearCurrentJdk(EnvTarget::Auto)) {
+                if (!ctx.env->clearCurrentJdk(EnvTarget::Auto)) {
                     PrintError(L"清除当前 JDK PATH 失败");
                     return ExitCode::PermissionDenied;
                 }
@@ -142,7 +143,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
                                               [](const auto& a, const auto& b) {
                                                   return std::stoi(a.first) < std::stoi(b.first);
                                               });
-                if (!JavaEnvService::setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
+                if (!ctx.env->setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
                     PrintError(L"切换到最大版本失败");
                     return ExitCode::PermissionDenied;
                 }
@@ -151,7 +152,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
         } else {
             // 当前 PATH 不是该版本，但为了安全，从 PATH 中删除该版本的 bin 路径（如果存在）
             std::wstring binPath = JoinPath(existingPath, L"bin");
-            std::wstring path = RegistryOperator::getPath(EnvTarget::Auto);
+            std::wstring path = ctx.registry->readPath(EnvTarget::Auto);
             auto entries = PathUtils::splitPath(path);
             entries = PathUtils::removeEntries(entries, binPath);
             std::wstring newPath;
@@ -159,11 +160,11 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
                 if (i > 0) newPath += L';';
                 newPath += entries[i];
             }
-            RegistryOperator::setPath(newPath, EnvTarget::Auto);
+            ctx.registry->writePath(newPath, EnvTarget::Auto);
         }
 
         // 删除任何残留的 JAVA_HOME<version> 变量（向后兼容）
-        RegistryOperator::deleteEnvString(L"JAVA_HOME" + majorVersion, EnvTarget::Auto);
+        ctx.registry->deleteEnv(L"JAVA_HOME" + majorVersion, EnvTarget::Auto);
         PrintInfo(L"旧版本环境变量已清理");
     }
 
@@ -192,11 +193,11 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
 
     // ----- 安装成功，更新缓存并设置当前版本 -----
     // 强制刷新缓存，获取最新列表
-    auto updatedJdks = JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
+    auto updatedJdks = ctx.scan->scanJdks(true, true);
     bool foundNew = false;
     for (const auto& [v, p] : updatedJdks) {
         if (p == installPath || v == majorVersion) { // 若路径匹配或版本匹配
-            if (!JavaEnvService::setCurrentJdk(p, EnvTarget::Auto)) {
+            if (!ctx.env->setCurrentJdk(p, EnvTarget::Auto)) {
                 PrintError(L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + v + L"'");
                 return ExitCode::PermissionDenied;
             }
@@ -211,7 +212,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
                                       [](const auto& a, const auto& b) {
                                           return std::stoi(a.first) < std::stoi(b.first);
                                       });
-        if (!JavaEnvService::setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
+        if (!ctx.env->setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
             PrintError(L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + maxIt->first + L"'");
             return ExitCode::PermissionDenied;
         }

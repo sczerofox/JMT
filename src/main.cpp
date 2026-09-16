@@ -13,8 +13,8 @@
 #include "command/data_command.hpp"
 #include "console/repl_engine.hpp"
 #include "console/color_print.hpp"
+#include "app/app_runtime.hpp"
 #include "app/elevation_gate.hpp"
-#include "platform/elevator.hpp"
 #include "system/utils.hpp"
 #include "jdk/jdk_download_service.hpp"
 #include <vector>
@@ -27,13 +27,9 @@ int wmain(int argc, wchar_t* argv[]) {
     // ---------- 初始化资源映射 ----------
     JdkDownloadService::reloadMappings();
 
-    // 构建上下文（组合根：这里装配生产环境的 Win32 适配器）
-    WinElevator elevator;
-    AppContext ctx;
-    ctx.paths = AppPaths::fromExecutable();
-    ctx.isInteractive = (argc == 1);
-    ctx.elevator = &elevator;
-    ctx.isElevated = elevator.isElevated();
+    // 组合根：装配 Win32 适配器与服务实例
+    AppRuntime runtime(AppPaths::fromExecutable(), argc == 1);
+    AppContext& ctx = runtime.context();
 
     // 构建命令注册表
     CommandRegistry registry;

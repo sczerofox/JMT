@@ -214,7 +214,7 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
     // ----- 强制刷新缓存（重要！）-----
     if (restoreSuccess) {
         PrintInfo(L"正在刷新 JDK 缓存...");
-        auto jdks = JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
+        auto jdks = ctx.scan->scanJdks(true, true);
         PrintSuccess(L"版本 " + version + L" 已还原至 " + originalPath);
         PrintWarning(L"请运行 'jmt search' 或 'jmt use' 重新配置环境变量（若需要）");
     } else {

@@ -11,14 +11,14 @@ ExitCode SearchCommand::execute(const std::vector<std::wstring>& args, AppContex
     if (args.size() > 1 && StringHelper::equalsIgnoreCase(args[1], L"--force"))
         force = true;
 
-    auto jdks = JdkScanService::scanJdks(force, ctx.paths.cacheFile);
+    auto jdks = ctx.scan->scanJdks(force);
     if (jdks.empty()) {
         PrintWarning(L"未找到任何合法 JDK");
         return ExitCode::NotFound;
     }
 
     // 检查 PATH 中是否已有 JDK 版本
-    std::wstring currentVer = JavaEnvService::getCurrentVersion();
+    std::wstring currentVer = ctx.env->getCurrentVersion();
     if (!currentVer.empty()) {
         PrintSuccess(L"扫描完成，共 " + std::to_wstring(jdks.size()) + L" 个版本，当前生效: " + currentVer);
         PrintWarning(L"如需切换版本，请使用 'jmt use <版本号>'");
@@ -34,7 +34,7 @@ ExitCode SearchCommand::execute(const std::vector<std::wstring>& args, AppContex
     std::wstring maxPath = maxIt->second;
 
     // 切换 PATH 到最大版本
-    if (!JavaEnvService::setCurrentJdk(maxPath, EnvTarget::Auto)) {
+    if (!ctx.env->setCurrentJdk(maxPath, EnvTarget::Auto)) {
         PrintError(L"设置当前 JDK 到 PATH 失败，请检查权限");
         return ExitCode::PermissionDenied;
     }

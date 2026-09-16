@@ -2,6 +2,7 @@
 #include "jdk/java_env_service.hpp"
 #include "jdk/jdk_scan_service.hpp"
 #include "system/path_utils.hpp"
+#include <windows.h>
 #include "console/color_print.hpp"
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
@@ -45,7 +46,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
     if (subCmd == L"env") {
         PrintInfo(L"正在从 PATH 中移除 JMT 自身目录...");
 
-        std::wstring path = RegistryOperator::getPath(target);
+        std::wstring path = ctx.registry->readPath(target);
         auto entries = PathUtils::splitPath(path);
         entries = PathUtils::removeEntries(entries, ctx.paths.exeDir);
         std::wstring newPath;
@@ -53,7 +54,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
             if (i > 0) newPath += L';';
             newPath += entries[i];
         }
-        RegistryOperator::setPath(newPath, target);
+        ctx.registry->writePath(newPath, target);
 
         PrintSuccess(L"JMT 自身目录已从 PATH 中移除");
         return ExitCode::Ok;
@@ -77,7 +78,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
         PrintInfo(L"正在完全清理所有 JMT 配置...");
 
         // 1. 清除当前 JDK（删除 PATH 条目，恢复 Oracle javapath）
-        if (!JavaEnvService::clearCurrentJdk(target)) {
+        if (!ctx.env->clearCurrentJdk(target)) {
             PrintError(L"清除当前 JDK PATH 失败");
         } else {
             PrintInfo(L"已清除当前 JDK PATH，已恢复 Oracle javapath");
@@ -85,7 +86,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
 
         // 2. 删除 JMT 自身 PATH 条目
         {
-            std::wstring path = RegistryOperator::getPath(target);
+            std::wstring path = ctx.registry->readPath(target);
             auto entries = PathUtils::splitPath(path);
             entries = PathUtils::removeEntries(entries, ctx.paths.exeDir);
             std::wstring newPath;
@@ -93,7 +94,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
                 if (i > 0) newPath += L';';
                 newPath += entries[i];
             }
-            RegistryOperator::setPath(newPath, target);
+            ctx.registry->writePath(newPath, target);
             PrintInfo(L"已从 PATH 中移除 JMT 自身目录");
         }
 
@@ -134,11 +135,11 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
         }
 
         // 6. 清理所有 JAVA_HOME* 变量
-        auto varNames = RegistryOperator::enumerateEnvValueNames(target);
+        auto varNames = ctx.registry->listEnvNames(target);
         bool hasJavaHome = false;
         for (const auto& name : varNames) {
             if (name.find(L"JAVA_HOME") == 0) {
-                RegistryOperator::deleteEnvString(name, target);
+                ctx.registry->deleteEnv(name, target);
                 hasJavaHome = true;
             }
         }
@@ -201,10 +202,10 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
         PrintInfo(L"正在删除 JDK 版本 " + version + L" ...");
 
         // 获取当前 JDK 列表（使用缓存，若缓存无效则强制扫描）
-        auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
+        auto jdks = ctx.scan->scanJdks(false, true);
         if (jdks.empty()) {
             PrintInfo(L"缓存为空，强制扫描...");
-            jdks = JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
+            jdks = ctx.scan->scanJdks(true, true);
             if (jdks.empty()) {
                 PrintWarning(L"未找到任何 JDK");
                 return ExitCode::NotFound;
@@ -222,7 +223,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
         std::wstring jdkPath = it->second;
 
         // ---- 处理 PATH 切换（如果删除的是当前版本） ----
-        std::wstring currentVer = JavaEnvService::getCurrentVersion();
+        std::wstring currentVer = ctx.env->getCurrentVersion();
         if (currentVer == version) {
             // 需要切换到其他版本（选最大）
             std::vector<std::pair<std::wstring, std::wstring>> otherJdks;
@@ -234,14 +235,14 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
                                               [](const auto& a, const auto& b) {
                                                   return std::stoi(a.first) < std::stoi(b.first);
                                               });
-                if (!JavaEnvService::setCurrentJdk(maxIt->second, target)) {
+                if (!ctx.env->setCurrentJdk(maxIt->second, target)) {
                     PrintError(L"切换到最大版本失败");
                     return ExitCode::PermissionDenied;
                 }
                 PrintInfo(L"已自动切换到版本 " + maxIt->first);
             } else {
                 // 无其他版本，清除当前 JDK
-                if (!JavaEnvService::clearCurrentJdk(target)) {
+                if (!ctx.env->clearCurrentJdk(target)) {
                     PrintError(L"清除当前 JDK PATH 失败");
                     return ExitCode::PermissionDenied;
                 }
@@ -250,7 +251,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
         } else {
             // 删除的不是当前版本，但为了防止 PATH 中残留该版本的 bin 路径，尝试移除
             std::wstring binPath = JoinPath(jdkPath, L"bin");
-            std::wstring path = RegistryOperator::getPath(target);
+            std::wstring path = ctx.registry->readPath(target);
             auto entries = PathUtils::splitPath(path);
             entries = PathUtils::removeEntries(entries, binPath);
             std::wstring newPath;
@@ -258,7 +259,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
                 if (i > 0) newPath += L';';
                 newPath += entries[i];
             }
-            RegistryOperator::setPath(newPath, target);
+            ctx.registry->writePath(newPath, target);
         }
 
         // ---- 将 JDK 目录移动到回收站 ----
@@ -302,10 +303,10 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
         auto newJdks = jdks;
         newJdks.erase(std::remove_if(newJdks.begin(), newJdks.end(),
                                      [&](const auto& p) { return p.first == version; }), newJdks.end());
-        JdkScanService::writeCache(newJdks, ctx.paths.cacheFile);
+        ctx.scan->writeCache(newJdks);
 
         // ---- 删除任何残留的 JAVA_HOME<version> 变量（向后兼容） ----
-        RegistryOperator::deleteEnvString(L"JAVA_HOME" + version, target);
+        ctx.registry->deleteEnv(L"JAVA_HOME" + version, target);
 
         PrintSuccess(L"JDK " + version + L" 已移至回收站并清理相关配置");
         PrintInfo(L"如需还原，请使用 'jmt rollback " + version + L"'");

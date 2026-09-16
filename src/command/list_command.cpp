@@ -4,13 +4,13 @@
 #include "console/color_print.hpp"
 
 ExitCode ListCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
-    auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
+    auto jdks = ctx.scan->scanJdks(false, true);
     if (jdks.empty()) {
         PrintWarning(L"未找到任何 JDK，请运行 'search' 强制扫描");
         return ExitCode::NotFound;
     }
 
-    std::wstring currentVer = JavaEnvService::getCurrentVersion();
+    std::wstring currentVer = ctx.env->getCurrentVersion();
     PrintInfo(L"已安装的 Java 版本：");
     for (const auto& [ver, path] : jdks) {
         if (ver == currentVer) {

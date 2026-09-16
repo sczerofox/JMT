@@ -1,6 +1,6 @@
 #include "jdk/java_env_service.hpp"
 #include "system/path_utils.hpp"
-#include "console/color_print.hpp"
+#include "platform/output.hpp"
 #include "system/utils.hpp"
 #include <algorithm>
 #include <regex>
@@ -29,7 +29,7 @@ bool JavaEnvService::setCurrentJdk(const std::wstring& jdkPath, EnvTarget target
     std::wstring binPath = GetJdkBinPath(jdkPath);
 
     // 1. 获取当前 PATH
-    std::wstring path = RegistryOperator::getPath(target);
+    std::wstring path = registry_.readPath(target);
     auto entries = PathUtils::splitPath(path);
 
     // 2. 删除所有 JDK bin 路径（由 JMT 管理的）
@@ -42,7 +42,7 @@ bool JavaEnvService::setCurrentJdk(const std::wstring& jdkPath, EnvTarget target
 
     // 3. 移除 Oracle javapath（无论是否存在，确保其不干扰）
     removeOracleJavaPath(target); // 内部会修改 PATH，但我们重新读取 PATH 以确保一致
-    path = RegistryOperator::getPath(target);
+    path = registry_.readPath(target);
     entries = PathUtils::splitPath(path);
     // 再次过滤（防止上一步删除不彻底）
     newEntries.clear();
@@ -63,7 +63,7 @@ bool JavaEnvService::setCurrentJdk(const std::wstring& jdkPath, EnvTarget target
     }
 
     // 6. 写入 PATH
-    if (!RegistryOperator::setPath(newPath, target))
+    if (!registry_.writePath(newPath, target))
         return false;
 
     return true;
@@ -71,7 +71,7 @@ bool JavaEnvService::setCurrentJdk(const std::wstring& jdkPath, EnvTarget target
 
 bool JavaEnvService::clearCurrentJdk(EnvTarget target) {
     // 1. 获取当前 PATH
-    std::wstring path = RegistryOperator::getPath(target);
+    std::wstring path = registry_.readPath(target);
     auto entries = PathUtils::splitPath(path);
 
     // 2. 删除所有 JDK bin 路径
@@ -88,7 +88,7 @@ bool JavaEnvService::clearCurrentJdk(EnvTarget target) {
         newPath += newEntries[i];
     }
 
-    if (!RegistryOperator::setPath(newPath, target))
+    if (!registry_.writePath(newPath, target))
         return false;
 
     // 3. 恢复 Oracle javapath（如果目录存在）
@@ -97,7 +97,7 @@ bool JavaEnvService::clearCurrentJdk(EnvTarget target) {
 }
 
 std::wstring JavaEnvService::getCurrentVersion() {
-    std::wstring path = RegistryOperator::getPath(EnvTarget::Auto);
+    std::wstring path = registry_.readPath(EnvTarget::Auto);
     auto entries = PathUtils::splitPath(path);
     for (const auto& e : entries) {
         if (IsJdkBinPath(e)) {
@@ -119,7 +119,7 @@ std::wstring JavaEnvService::getCurrentVersion() {
 
 void JavaEnvService::removeOracleJavaPath(EnvTarget target) {
     std::wstring oraclePath = L"C:\\Program Files\\Common Files\\Oracle\\Java\\javapath";
-    std::wstring path = RegistryOperator::getPath(target);
+    std::wstring path = registry_.readPath(target);
     auto entries = PathUtils::splitPath(path);
     auto newEntries = PathUtils::removeEntries(entries, oraclePath);
     // 也删除带引号的版本（如果有）
@@ -130,8 +130,8 @@ void JavaEnvService::removeOracleJavaPath(EnvTarget target) {
         if (i > 0) newPath += L';';
         newPath += newEntries[i];
     }
-    RegistryOperator::setPath(newPath, target);
-    PrintInfo(L"已从 PATH 中移除 Oracle javapath 条目");
+    registry_.writePath(newPath, target);
+    out_.line(OutputLevel::Info, L"已从 PATH 中移除 Oracle javapath 条目");
 }
 
 void JavaEnvService::restoreOracleJavaPath(EnvTarget target) {
@@ -140,7 +140,7 @@ void JavaEnvService::restoreOracleJavaPath(EnvTarget target) {
     if (!IsDirectory(oraclePath)) {
         return;
     }
-    std::wstring path = RegistryOperator::getPath(target);
+    std::wstring path = registry_.readPath(target);
     auto entries = PathUtils::splitPath(path);
     // 如果已存在则不重复添加
     bool exists = false;
@@ -157,7 +157,7 @@ void JavaEnvService::restoreOracleJavaPath(EnvTarget target) {
             if (i > 0) newPath += L';';
             newPath += newEntries[i];
         }
-        RegistryOperator::setPath(newPath, target);
-        PrintInfo(L"已添加 Oracle javapath 到 PATH");
+        registry_.writePath(newPath, target);
+        out_.line(OutputLevel::Info, L"已添加 Oracle javapath 到 PATH");
     }
 }

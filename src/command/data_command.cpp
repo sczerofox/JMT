@@ -24,7 +24,7 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
     if (subCmd == L"output") {
         PrintInfo(L"正在扫描合法 JDK...");
 
-        auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
+        auto jdks = ctx.scan->scanJdks(false, true);
         if (jdks.empty()) {
             PrintWarning(L"未找到任何合法 JDK，无法导出");
             return ExitCode::NotFound;
@@ -160,7 +160,7 @@ ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext&
 
         // 3. 更新缓存
         if (successCount > 0) {
-            JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
+            ctx.scan->scanJdks(true, true);
         }
 
         // 4. 汇总

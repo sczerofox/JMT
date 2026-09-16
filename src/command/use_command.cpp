@@ -12,7 +12,7 @@ ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& 
     }
     const std::wstring& ver = args[1];
 
-    auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
+    auto jdks = ctx.scan->scanJdks(false, true);
     bool found = false;
     std::wstring targetPath;
     for (const auto& [v, p] : jdks) {
@@ -27,7 +27,7 @@ ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& 
         return ExitCode::NotFound;
     }
 
-    if (!JavaEnvService::setCurrentJdk(targetPath, EnvTarget::Auto)) {
+    if (!ctx.env->setCurrentJdk(targetPath, EnvTarget::Auto)) {
         PrintError(L"切换失败，请确保有管理员权限");
         return ExitCode::PermissionDenied;
     }

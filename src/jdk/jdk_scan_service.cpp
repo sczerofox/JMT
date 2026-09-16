@@ -96,11 +96,10 @@ std::wstring JdkScanService::extractVersion(const std::wstring& path) {
 }
 
 // 写入缓存（定义在 scanJdks 之前，确保可见）
-void JdkScanService::writeCache(const std::vector<std::pair<std::wstring, std::wstring>>& jdks,
-                                const std::wstring& cachePath) {
-    FileLock lock(cachePath);
+void JdkScanService::writeCache(const std::vector<std::pair<std::wstring, std::wstring>>& jdks) {
+    FileLock lock(paths_.cacheFile);
     if (!lock.tryLock()) {
-        PrintWarning(L"无法获取缓存文件锁，跳过缓存写入");
+        out_.line(OutputLevel::Warning, L"无法获取缓存文件锁，跳过缓存写入");
         return;
     }
 
@@ -110,23 +109,21 @@ void JdkScanService::writeCache(const std::vector<std::pair<std::wstring, std::w
     }
 
     if (!lock.writeAllText(content)) {
-        PrintError(L"写入缓存文件失败: " + cachePath);
+        out_.line(OutputLevel::Error, L"写入缓存文件失败: " + paths_.cacheFile);
     } else {
-        PrintDebug(L"缓存写入成功");
+        out_.line(OutputLevel::Debug, L"缓存写入成功");
     }
 }
 
-// 修正：定义为类的静态成员函数
 std::vector<std::pair<std::wstring, std::wstring>> JdkScanService::scanJdks(
         bool force,
-        const std::wstring& cachePath,
         bool silent) {
     std::vector<std::pair<std::wstring, std::wstring>> result;
 
     if (!force) {
-        FileLock lock(cachePath);
+        FileLock lock(paths_.cacheFile);
         if (lock.tryLock()) {
-            std::wstring content = ReadFileText(cachePath);
+            std::wstring content = ReadFileText(paths_.cacheFile);
             if (!content.empty()) {
                 auto lines = StringHelper::split(content, L'\n', false);
                 for (auto& line : lines) {
@@ -137,19 +134,19 @@ std::vector<std::pair<std::wstring, std::wstring>> JdkScanService::scanJdks(
                         if (JdkScanService::isValidJdk(path)) {
                             result.push_back({ver, path});
                         } else {
-                            PrintDebug(L"Cache entry invalid: " + path);
+                            out_.line(OutputLevel::Debug, L"Cache entry invalid: " + path);
                         }
                     }
                 }
                 if (result.size() != lines.size()) {
-                    JdkScanService::writeCache(result, cachePath);
+                    writeCache(result);
                 }
                 return result;
             }
         }
     }
 
-    PrintInfo(L"开始全盘扫描SSD，请稍候...");
+    out_.line(OutputLevel::Info, L"开始全盘扫描SSD，请稍候...");
     auto drives = GetAvailableDrives();
     std::set<std::wstring> seen;
     int found = 0;
@@ -177,11 +174,11 @@ std::vector<std::pair<std::wstring, std::wstring>> JdkScanService::scanJdks(
     // 输出所有找到的 JDK 路径（受 silent 控制）
     if (!silent && !result.empty()) {
         for (const auto& [ver, path] : result) {
-            PrintInfo(L"找到 JDK: " + path);
+            out_.line(OutputLevel::Info, L"找到 JDK: " + path);
         }
     }
 
-    PrintInfo(L"扫描完成，共找到 " + std::to_wstring(found) + L" 个JDK版本");
-    JdkScanService::writeCache(result, cachePath);
+    out_.line(OutputLevel::Info, L"扫描完成，共找到 " + std::to_wstring(found) + L" 个JDK版本");
+    writeCache(result);
     return result;
 }
