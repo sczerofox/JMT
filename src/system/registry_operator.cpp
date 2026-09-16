@@ -181,3 +181,31 @@ std::vector<std::wstring> RegistryOperator::enumerateEnvValueNames(EnvTarget tar
     RegCloseKey(hKey);
     return result;
 }
+
+// ============================================================
+// IRegistry 实现（过渡期：转发到既有静态实现，行为完全一致）
+// ============================================================
+
+std::wstring RegistryOperator::readEnv(const std::wstring& name, EnvTarget target) {
+    return readEnvString(name, target);
+}
+
+bool RegistryOperator::writeEnv(const std::wstring& name, const std::wstring& value, EnvTarget target) {
+    return writeEnvString(name, value, target);
+}
+
+bool RegistryOperator::deleteEnv(const std::wstring& name, EnvTarget target) {
+    return deleteEnvString(name, target);
+}
+
+std::vector<std::wstring> RegistryOperator::listEnvNames(EnvTarget target) {
+    return enumerateEnvValueNames(target);
+}
+
+std::wstring RegistryOperator::readPath(EnvTarget target) {
+    return getPath(target);
+}
+
+bool RegistryOperator::writePath(const std::wstring& path, EnvTarget target) {
+    return setPath(path, target);
+}

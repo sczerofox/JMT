@@ -2,15 +2,20 @@
 #include <string>
 #include <vector>
 #include <windows.h>
+#include "platform/registry.hpp"
 
-enum class EnvTarget {
-    Auto,       // 先系统，失败则用户
-    SystemOnly,
-    UserOnly
-};
-
-class RegistryOperator {
+class RegistryOperator : public IRegistry {
 public:
+    // ---------- IRegistry：实例接口，供服务层注入使用 ----------
+    std::wstring readEnv(const std::wstring& name, EnvTarget target = EnvTarget::Auto) override;
+    bool writeEnv(const std::wstring& name, const std::wstring& value,
+                  EnvTarget target = EnvTarget::Auto) override;
+    bool deleteEnv(const std::wstring& name, EnvTarget target = EnvTarget::Auto) override;
+    std::vector<std::wstring> listEnvNames(EnvTarget target = EnvTarget::Auto) override;
+    std::wstring readPath(EnvTarget target) override;
+    bool writePath(const std::wstring& path, EnvTarget target) override;
+
+    // ---------- 既有静态 API（过渡期保留，skeleton/8 删除） ----------
     // 写入环境变量（键值对）
     static bool writeEnvString(const std::wstring& key, const std::wstring& value, EnvTarget target = EnvTarget::Auto);
     // 读取环境变量（返回空串表示不存在）
