@@ -29,6 +29,7 @@ set(JMT_CORE_SOURCES
         src/app/env_scope.cpp
         src/jdk/jdk_scan_service.cpp
         src/jdk/download_plan.cpp
+        src/jdk/version_match.cpp
         src/jdk/java_env_service.cpp
         src/jdk/jdk_download_service.cpp
         src/jdk/jmt_path_service.cpp
@@ -36,6 +37,7 @@ set(JMT_CORE_SOURCES
         src/system/file_lock.cpp
         src/system/utils.cpp
         src/common/string_helper.cpp
+        src/common/java_version.cpp
         src/platform/console_output.cpp
         src/platform/win_elevator.cpp
         src/platform/win_registry.cpp
