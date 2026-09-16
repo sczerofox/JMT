@@ -344,7 +344,9 @@ static void restoreOracleJavaPath(EnvTarget target = EnvTarget::Auto);
 
 **clearCurrentJdk**：过滤掉所有 JDK bin 条目后写回，再调用 `restoreOracleJavaPath`（仅当 `C:\Program Files\Common Files\Oracle\Java\javapath` 目录存在且未在 PATH 中时才追加）。
 
-**getCurrentVersion**：遍历 PATH，对首个匹配 JDK bin 的条目用 `jdk(?:1\.(\d+)|[-_]?(\d+))` 提取版本号；没有则返回空串。该函数在 `search` 中用于判断「PATH 是否已有 JDK」。
+**getCurrentVersion**：按「**用户 PATH 优先 → 系统 PATH**」的顺序读取（Windows 上用户 PATH 先于系统 PATH 生效；此前只读系统 PATH，导致写在用户 PATH 里的 JDK 被判定为「当前无版本」），对首个匹配 JDK bin 的条目用 `jdk(?:1\.(\d+)|[-_]?(\d+))` 提取版本号；都没有则返回空串。该函数在 `search` 中用于判断「PATH 是否已有 JDK」。
+
+**作用域**：`setCurrentJdk` / `clearCurrentJdk` / `removeOracleJavaPath` / `restoreOracleJavaPath` 均接受 `EnvTarget`，由命令层经 `EnvScope` 解析 `--user` / `--sys` 后传入；不传则用 `Auto`（先系统、失败再用户）。
 
 ### 4.3 JmtPathService — 自身 PATH 注册
 
@@ -370,8 +372,16 @@ static void reloadMappings();
 - `initBuiltinMappings()`：ZIP 源覆盖主版本 11~26（含各补丁版本），EXE 源覆盖主版本 6~13；数据源为华为云 `repo.huaweicloud.com` 与 `mirrors.huaweicloud.com`
 - `ensureExternalMappingFiles()`：创建/补齐 `.repo\jdk_zip_repo.txt`、`.repo\jdk_exe_repo.txt`；若检测到文件以 `FF FE` 开头（旧版遗留 UTF-16 LE）则删除重建；写入时用 `WriteFileText`（UTF-8 带 BOM），内容为注释头 + 内置 URL 列表
 - `loadExternalMappings()`：逐行读取（跳过空行与 `#` 注释），`ExtractVersionFromUrl` 用 `[/-](\d+)(?:\.\d+)*[/_-]` 提取主版本后追加到对应列表
-- `findZipUrl` / `findExeUrl`：只返回该版本列表的**第 0 条** URL
-- `isDemoPackage`：URL 含 `-demos` 时给出警告（仅提示，不跳过）
+- `zipUrlsFor` / `exeUrlsFor`：返回该版本的**完整**源列表（内置在前、外部追加）
+
+**下载计划**（`jdk/download_plan.hpp`，阶段 1 引入）
+
+源选择被抽成纯逻辑，便于脱离网络测试：
+
+- `DownloadMode`：`Default`（ZIP → EXE → 官方）、`MirrorOnly`、`OfficialOnly`
+- `DownloadPlan::build(mode, installerOnly, zipUrls, exeUrls)`：按顺序展开为 `DownloadStep` 列表；`-demos` URL 不进入步骤，而是记录到 `skippedDemoUrls` 供提示
+- `installerOnly = true`（命令行 `exe`）：计划只含 EXE 源（官方 API 只提供 ZIP，不参与该模式）
+- 执行由 `JdkDownloadService::executePlan` 完成：逐步尝试，输出「源 i/n」，单个源失败继续下一个；全部失败返回空串
 
 **安装路径**：`installRoot` 为空时用 `GetInstallRoot()`——从 `D:` 依次到 `Z:` 尝试 `Program Files\Java`，返回第一个已存在或创建成功的目录，全部失败则落地 `C:\Program Files\Java`；目标目录为 `<root>\jdk-<主版本>`。若目标目录已是合法 JDK 则直接返回，不重复下载。
 
@@ -401,10 +411,10 @@ class WinRegistry : public IRegistry {
 };
 ```
 
-- 根键：`EnvTarget::SystemOnly → HKEY_LOCAL_MACHINE`，`UserOnly → HKEY_CURRENT_USER`，`Auto` 先系统后用户
-- 子键固定为 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`（对 `HKCU` 而言该路径不存在，见 10.4）
+- 根键：`EnvTarget::SystemOnly → HKEY_LOCAL_MACHINE`，`UserOnly → HKEY_CURRENT_USER`，`Auto` 先系统后用户（`targetsFor()` 返回尝试序列）
+- 子键按目标选择：系统 = `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`，用户 = `HKCU\Environment`；用户级键在写模式下不存在时会 `RegCreateKeyExW` 创建
 - 值类型：`REG_EXPAND_SZ`，读取时接受 `REG_EXPAND_SZ` 与 `REG_SZ`
-- `Auto` 模式在系统写入失败后自动尝试用户分支，因此失败会静默返回 `false`，调用方需自行处理
+- `Auto` 模式在系统写入失败后自动尝试用户分支；两个分支都失败时返回 `false`，由调用方决定如何上报（`remove env` / `remove all` 会检查返回值并返回退出码 3）
 - 写/删成功后调用 `BroadcastEnvironmentChange()`：`SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, L"Environment", SMTO_ABORTIFHUNG, 10000)`；首次返回 0（超时/失败）时 `Sleep(500)` 后用 5 秒超时重试一次，两次都失败只写调试日志（`OutputDebugStringW`，仅 Debug 构建），不影响注册表结果
 
 ### 5.2 PathUtils — PATH 字符串处理
@@ -550,15 +560,18 @@ main（不提权）→ DataCommand::execute(["data","input"])
 提权判断集中在 `app/elevation_gate.hpp`，由命令元数据驱动，`main.cpp` 与 `REPL` 共用同一条路径：
 
 ```cpp
-// 命令声明自己是否需要管理员权限
+// 命令声明自己是否需要管理员权限、是否支持 --user
 [[nodiscard]] bool requiresElevation() const override { return true; }   // use/env/remove/search/download
+[[nodiscard]] bool allowsUserScope() const override { return true; }     // 同上五个命令
 
 // 调用方（main / REPL）
-const ElevationDecision decision = ElevationGate::ensure(command->requiresElevation(), args, ctx);
+const ElevationDecision decision = ElevationGate::ensure(
+        command->requiresElevation(), command->allowsUserScope(), args, ctx);
 if (!decision.proceed) return toInt(decision.code);   // 已启动提权进程或提权失败
 ```
 
 - `ElevationDecision{proceed, code}`：`proceed == false` 表示「已启动提权进程（`code == Ok`）」或「提权失败（`code == PermissionDenied`，对应退出码 3）」，调用方据此停止执行当前进程的命令
+- `--user` 免提权：当命令 `allowsUserScope()` 且命令行含 `--user`（`ElevationGate::hasFlag`）时直接放行，由 `EnvScope` 把 `EnvTarget::UserOnly` 传给服务层
 - `data input` 与 `rollback <版本>` 这类按子命令提权的命令，使用 `ElevationGate::requestElevation(args, ctx)`（无条件请求提权）
 - 命令行拼接（含空格参数加引号）由 `ElevationGate::buildCommandLine` 统一实现；提示语固定为「需要管理员权限，正在请求提权...」，失败提示「提权失败，请手动以管理员身份运行」
 - 骨架阶段之前，main 与 7 个命令各自复制了一份等价实现（语义已分叉）；现在命令内部不再有任何提权代码
@@ -717,10 +730,10 @@ build/jmt_tests.exe --suite path_utils
 
 | # | 位置 | 现象 | 影响 |
 |---|------|------|------|
-| 1 | `src/platform/win_registry.cpp`（`openEnvKey`） | 无论 `EnvTarget` 为何，子键固定为 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`；该相对路径在 `HKCU` 下不存在（用户环境变量实际在 `HKCU\Environment`） | `--user` / `--sys` 的用户分支、`Auto` 的自动降级全部失效；`remove env` 等仍打印成功提示（返回值被忽略）。阶段 1 修复，并同时把 `--user` 的免提权语义建立在可测试的端口上 |
-| 2 | `src/platform/console_output.cpp`（`writeLine`） | 输出固定使用 `WriteConsoleW` | stdout 被重定向到文件或管道时没有任何输出，集成测试只能断言退出码。阶段 1 在 `ConsoleOutput` 内加非控制台回退后，输出即可被捕获（`IOutput` 已就位，测试可注入自己的实现） |
-| 3 | `src/jdk/jdk_download_service.cpp`（`findZipUrl` / `findExeUrl`） | 只取列表中第 0 条 URL | 每个内置版本的多个补丁 URL、以及追加在其后的外部 `.repo` 自定义源都不会被尝试；「多源回退」实际是「镜像 ZIP → 镜像 EXE → 官方」三层，而非同层多 URL 轮询 |
-| 4 | `src/command/download_command.cpp` | `exe` 参数只被识别后跳过，没有任何分支使用 | `jmt download 8 exe` 与默认策略等价，不会强制只下载 EXE |
+| 1 | `src/command/search_command.cpp` 等 | `restoreOracleJavaPath` 依赖真实目录 `C:\Program Files\Common Files\Oracle\Java\javapath` 是否存在 | 单测无法覆盖「恢复 javapath」分支（该目录不存在时是空操作），目前只验证 JDK 条目语义，javapath 往返留在手测清单 |
+| 2 | `src/jdk/jdk_download_service.cpp` | 官方源（Adoptium）只提供 ZIP | `jmt download 17 exe` 这类「只要安装包」的请求只能走镜像 EXE 源，官方无法提供；阶段 2 可考虑官方 MSI/EXE 变体 |
+| 3 | `src/jdk/download_plan.cpp` | `isDemoUrl` 依赖 URL 中出现 `-demos` | 若某镜像用其它命名方式提供 demo 包，仍会被当成正式包下载 |
+| 4 | `src/command/download_command.cpp` | `exe` 与 `java` / `--mirror` 同时给出时以 `exe` 优先 | 组合开关的语义是「显式覆盖」，未做冲突提示 |
 | 5 | `src/command/help_command.cpp` | `help <未知命令>` 打印错误后仍 `return ExitCode::Ok` | 脚本无法通过退出码判断帮助参数是否有效 |
 | 6 | `src/app/elevation_gate.cpp` | 提权提示语在骨架阶段统一为「需要管理员权限，正在请求提权...」 | 仅提示文案差异（原先 main 用的是「此操作需要管理员权限，正在请求...」），行为与退出码不变 |
 | 7 | `src/platform/console_output.cpp` | `progress()` 以 `info.dwSize.X` 填充整行，未处理控制台换行/滚动边界 | 进度行在窗口边缘可能残留字符 |
@@ -760,13 +773,26 @@ build/jmt_tests.exe --suite path_utils
 - 服务层不再有静态状态：`JdkDownloadService` 的映射表是实例成员，重复创建互不影响
 - 提权、输出、环境变量、路径四件事各只有一个入口，新增命令只需实现 `CommandBase` 的 4 个方法与注册
 
-**明确的下一步**（阶段 1 起，尚未开始）：
+### 11.1 阶段 1（功能硬伤）已完成
 
-1. 修 `WinRegistry` 的用户级分支（`HKCU\Environment`）与 `--user` 语义，并补 PATH 相关集成测试
-2. `ConsoleOutput` 在非控制台句柄时回退到 `WriteFile`（stdout 可重定向，测试可断言文案）
-3. 下载多 URL 轮询与 `exe` 参数生效；`isDemoPackage` 从「仅警告」改为「跳过」
-4. 取消与速度上报（`IElevator`/`IOutput` 之外新增 progress/cancel 端口）
-5. `JavaVersion` 结构体与缓存 schema 版本；并行扫描
+| 提交 | 内容 |
+|------|------|
+| phase1/1 | `WinRegistry` 用户级改用 `HKCU\Environment`；`targetsFor()` 取代下标运算；写模式下键不存在则创建 |
+| phase1/2 | `CommandBase::allowsUserScope()` + `ElevationGate` 的 `--user` 免提权判定 |
+| phase1/3 | `app/env_scope.hpp` 统一解析 `--user/--sys`；五个命令透传 target；`getCurrentVersion` 改为用户优先；`remove env/all` 检查写入返回值 |
+| phase1/4 | `ConsoleOutput` 非控制台回退 UTF-8 + CRLF；`progress/clearProgress` 在重定向下空操作 |
+| phase1/5 | `jdk/download_plan`（源选择纯逻辑）+ `executePlan` 逐条轮询；demo 包跳过 |
+| phase1/6 | `exe` 参数生效：`downloadInstallerOnly` 只下载安装包 |
+
+测试套件从 4 组增加到 8 组：新增 `unit.java_env_service`（内存 IRegistry）、`unit.download_plan`（源选择）、`integration.cli_output`（管道捕获输出）、`integration.registry_user_scope`（HKCU 往返，只写自建一次性变量）。
+
+> 注意：`integration.registry_user_scope` 会写注册表，沙箱环境下会被拒绝（`Requested registry access is not allowed`），需要在沙箱外运行 `ctest`（或用管理员/普通用户终端直接跑 `jmt_tests.exe --suite registry_user_scope`）。
+
+### 11.2 后续阶段（尚未开始）
+
+1. **阶段 2 · 下载子系统重做**：`DownloadSource` 策略化（优先级/测速/并发重试）+ 统一的「下载→校验→解压→安装」管线 + 取消与速度上报
+2. **阶段 3 · 版本模型与扫描**：`JavaVersion` 结构体（major/minor/patch/build）+ 缓存 schema 版本 + 并行/可取消扫描
+3. **阶段 4 · 可测性与 CI**：注入式 fake（注册表/文件系统/HTTP）+ PATH/回收站往返集成测试 + GitHub Actions 跑 `ctest`（同时决定 `tests/` 是否改为发布）
 
 ---
 

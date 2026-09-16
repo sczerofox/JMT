@@ -28,6 +28,12 @@
 | `jmt version` | 显示版本信息 | 否 |
 | `jmt help [命令]` | 显示帮助或指定命令详情 | 否 |
 
+会写 PATH 的 5 个命令（`search` / `use` / `env` / `remove` / `download`）都支持两个作用域开关：
+
+- `--user`：只改**当前用户**的环境变量（`HKCU\Environment`），**不需要管理员权限**
+- `--sys`：只改**系统**的环境变量，需要管理员权限
+- 不带开关时先尝试系统、失败再尝试用户
+
 ---
 
 ## 快速开始
@@ -130,7 +136,8 @@ jmt download 17
 | 默认 | 镜像 ZIP → 镜像 EXE → 官方 Adoptium ZIP，三级回退 |
 | `--mirror` | 只走镜像：ZIP 失败再试 EXE，不访问官方源 |
 | `java` | 跳过镜像，直接用官方 Adoptium API 下载 ZIP |
-| `exe` | 已解析但**暂无独立分支**，行为与默认一致（见「已知限制」） |
+| `exe` | 只下载 EXE 安装包到 `.temp` 并提示手动安装，不自动安装 |
+| `--user` / `--sys` | 指定 PATH 操作的作用域（`--user` 免提权） |
 
 其它行为：
 
@@ -266,14 +273,18 @@ jmt> exit
 
 ### 已知限制
 
-以下行为来自当前源码实现，与直觉或旧版文档可能不同：
+以下行为来自当前源码实现，与直觉或旧版文档可能不同（阶段 1 已修复的 4 项列在末尾）：
 
-1. **输出依赖真实控制台**：所有输出走 `WriteConsoleW`（`src/platform/console_output.cpp`），把 stdout 重定向到文件或管道时看不到任何内容，只有退出码可用。
-2. **`--user` / 用户级 PATH 降级不生效**：`RegistryOperator` 无论目标是系统还是用户都打开注册表相对路径 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`，该键在 `HKCU` 下不存在（用户级环境变量实际位于 `HKCU\Environment`），因此 `--user` 分支与「无权限时自动降级到用户 PATH」都不会真正写入，`remove env` 等命令仍会打印成功提示。
-3. **`download ... exe` 参数未生效**：`src/command/download_command.cpp` 只把 `exe` 识别为兼容参数后跳过，没有任何分支使用它，实际行为等同默认策略。
-4. **外部镜像源只在版本缺失时生效**：`findZipUrl` / `findExeUrl` 只返回该版本列表中的第一条 URL，内置版本（ZIP 11~26、EXE 6~13）始终使用内置第一条，追加在后面的外部 URL 不会被尝试。
-5. **交互模式提权仍会另开窗口**：提权已统一到 `ElevationGate`（命令用元数据声明是否需要管理员权限），但成功提权后命令在**新窗口**执行并停留等待按键，REPL 会话本身继续留在原窗口。
-6. **版本号常量分散多处**：`src/command/version_command.cpp` 与 `src/console/repl_engine.cpp` 的 banner 各写一份，升级版本时需同步修改。
+1. **交互模式提权仍会另开窗口**：提权已统一到 `ElevationGate`（命令用元数据声明是否需要管理员权限与是否支持 `--user`），但成功提权后命令在**新窗口**执行并停留等待按键，REPL 会话本身继续留在原窗口。
+2. **版本号常量分散多处**：`src/command/version_command.cpp` 与 `src/console/repl_engine.cpp` 的 banner 各写一份，升级版本时需同步修改。
+3. **提权提示语在阶段 1 统一**：固定为「需要管理员权限，正在请求提权...」（原先 main 用的是「此操作需要管理员权限，正在请求...」）。
+
+阶段 1 已修复（此前的已知问题，现在行为如下）：
+
+- **输出可重定向**：stdout 不是控制台时改用 `WriteFile` 输出 UTF-8 + `CRLF`，`jmt help > out.txt` 有内容；控制台下的 ANSI 上色不变。
+- **`--user` / 用户级 PATH 可用**：用户级改用 `HKCU\Environment`；`--user` 免提权、`--sys` 需提权、不带开关先系统后用户；`remove env` / `remove all` 写入失败会报错并返回 `3`。
+- **`download ... exe` 生效**：只下载 EXE 安装包到 `.temp`，不自动安装；该版本没有 EXE 源时明确报错。
+- **同一版本的多条源会依次尝试**：内置源在前、`.repo` 外部源追加在后，逐条轮询并输出「源 i/n」；`-demos` 包直接跳过而不是下载。
 
 ---
 
