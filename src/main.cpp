@@ -1,5 +1,5 @@
 #include "command/command_registry.hpp"
-#include "command/jmt_context.hpp"
+#include "app/app_context.hpp"
 #include "command/search_command.hpp"
 #include "command/list_command.hpp"
 #include "command/use_command.hpp"
@@ -13,8 +13,9 @@
 #include "command/data_command.hpp"
 #include "console/repl_engine.hpp"
 #include "console/color_print.hpp"
+#include "app/elevation_gate.hpp"
+#include "platform/elevator.hpp"
 #include "system/utils.hpp"
-#include "system/elevation_helper.hpp"
 #include "jdk/jdk_download_service.hpp"
 #include <vector>
 #include <memory>
@@ -26,11 +27,13 @@ int wmain(int argc, wchar_t* argv[]) {
     // ---------- 初始化资源映射 ----------
     JdkDownloadService::reloadMappings();
 
-    // 构建上下文
-    JmtContext ctx;
+    // 构建上下文（组合根：这里装配生产环境的 Win32 适配器）
+    WinElevator elevator;
+    AppContext ctx;
     ctx.paths = AppPaths::fromExecutable();
     ctx.isInteractive = (argc == 1);
-    ctx.isElevated = ElevationHelper::IsElevated();
+    ctx.elevator = &elevator;
+    ctx.isElevated = elevator.isElevated();
 
     // 构建命令注册表
     CommandRegistry registry;
@@ -54,65 +57,35 @@ int wmain(int argc, wchar_t* argv[]) {
     if (ctx.isInteractive) {
         ReplEngine engine(registry, ctx);
         engine.run();
-        return 0;
+        return toInt(ExitCode::Ok);
     }
 
     // 单次命令模式
     if (args.empty()) {
         // 无参数但 argc>1？实际上不可能，但以防万一
         PrintError(L"无命令");
-        return 1;
+        return toInt(ExitCode::BadArgs);
     }
 
-    std::wstring cmd = args[0];
-    // 检查是否需要提权
-    bool needsAdmin = (cmd == L"use" || cmd == L"env" || cmd == L"remove" || cmd == L"search" || cmd == L"download");
-    // 但 search 需要写注册表初始化变量，也需要提权
-    if (needsAdmin && !ctx.isElevated) {
-        // 但若命令指定了 --user，则不需提权（仅操作 HKCU）
-        bool hasUserFlag = false;
-        for (const auto& a : args) {
-            if (a == L"--user") { hasUserFlag = true; break; }
-        }
-        if (cmd == L"remove" && hasUserFlag) {
-            // 可以不提权
-        } else if (cmd == L"search" && hasUserFlag) {
-            // search 没有 --user 参数，所以不提
-        } else {
-            // 需要提权
-            PrintInfo(L"此操作需要管理员权限，正在请求...");
-            // 构建完整命令行（包括原参数）
-            std::wstring cmdLine;
-            for (int i = 1; i < argc; ++i) {
-                if (i > 1) cmdLine += L' ';
-                // 如果参数包含空格，加引号
-                std::wstring arg = argv[i];
-                if (arg.find(L' ') != std::wstring::npos)
-                    cmdLine += L'"' + arg + L'"';
-                else
-                    cmdLine += arg;
-            }
-            if (ElevationHelper::RelaunchElevated(cmdLine)) {
-                return 0; // 父进程退出
-            } else {
-                PrintError(L"提权失败，请手动以管理员身份运行");
-                return 3;
-            }
-        }
-    }
+    const std::wstring& cmd = args[0];
 
     // 执行命令
     auto* command = registry.findCommand(cmd);
     if (!command) {
         PrintError(L"未知命令: " + cmd);
-        return 1;
+        return toInt(ExitCode::BadArgs);
+    }
+
+    // 提权：由命令元数据（CommandBase::requiresElevation）驱动，统一走 ElevationGate
+    const ElevationDecision decision = ElevationGate::ensure(command->requiresElevation(), args, ctx);
+    if (!decision.proceed) {
+        return toInt(decision.code);
     }
 
     try {
-        int exitCode = command->execute(args, ctx);
-        return exitCode;
+        return toInt(command->execute(args, ctx));
     } catch (const std::exception& e) {
         PrintError(L"执行异常: " + ToWideString(e.what()));
-        return 1;
+        return toInt(ExitCode::BadArgs);
     }
 }

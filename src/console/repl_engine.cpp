@@ -1,6 +1,7 @@
 #include "console/repl_engine.hpp"
 #include "console/repl_utils.hpp"
 #include "console/color_print.hpp"
+#include "app/elevation_gate.hpp"
 #include "system/utils.hpp"
 #include <windows.h>
 #include <iostream>
@@ -15,7 +16,7 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
     return FALSE;
 }
 
-ReplEngine::ReplEngine(CommandRegistry& registry, JmtContext& ctx)
+ReplEngine::ReplEngine(CommandRegistry& registry, AppContext& ctx)
         : registry_(registry), ctx_(ctx) {}
 
 void ReplEngine::run() {
@@ -41,10 +42,21 @@ void ReplEngine::run() {
             PrintError(L"未知命令，输入 'help' 查看帮助");
             continue;
         }
+
+        // 提权：与单次命令模式共用同一套元数据驱动逻辑
+        const ElevationDecision decision =
+                ElevationGate::ensure(command->requiresElevation(), tokens, ctx_);
+        if (!decision.proceed) {
+            if (decision.code != ExitCode::Ok) {
+                PrintDebug(L"命令返回码: " + std::to_wstring(toInt(decision.code)));
+            }
+            continue;
+        }
+
         try {
-            int code = command->execute(tokens, ctx_);
-            if (code != 0) {
-                PrintDebug(L"命令返回码: " + std::to_wstring(code));
+            const ExitCode code = command->execute(tokens, ctx_);
+            if (code != ExitCode::Ok) {
+                PrintDebug(L"命令返回码: " + std::to_wstring(toInt(code)));
             }
         } catch (const std::exception& e) {
             PrintError(L"执行异常: " + ToWideString(e.what()));

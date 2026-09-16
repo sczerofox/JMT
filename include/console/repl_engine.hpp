@@ -1,14 +1,14 @@
 #pragma once
 #include "command/command_registry.hpp"
-#include "command/jmt_context.hpp"
+#include "app/app_context.hpp"
 #include <string>
 
 class ReplEngine {
 public:
-    ReplEngine(CommandRegistry& registry, JmtContext& ctx);
+    ReplEngine(CommandRegistry& registry, AppContext& ctx);
     void run();
 private:
     CommandRegistry& registry_;
-    JmtContext& ctx_;
+    AppContext& ctx_;
     static void printBanner();
 };

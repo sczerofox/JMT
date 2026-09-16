@@ -5,10 +5,7 @@
 #include "common/string_helper.hpp"
 #include "app/elevation_gate.hpp"
 
-int SearchCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
-    if (!ctx.isElevated) {
-        return toInt(ElevationGate::ensureElevated(args));
-    }
+ExitCode SearchCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
 
     bool force = false;
     if (args.size() > 1 && StringHelper::equalsIgnoreCase(args[1], L"--force"))
@@ -17,7 +14,7 @@ int SearchCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
     auto jdks = JdkScanService::scanJdks(force, ctx.paths.cacheFile);
     if (jdks.empty()) {
         PrintWarning(L"未找到任何合法 JDK");
-        return 2;
+        return ExitCode::NotFound;
     }
 
     // 检查 PATH 中是否已有 JDK 版本
@@ -25,7 +22,7 @@ int SearchCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
     if (!currentVer.empty()) {
         PrintSuccess(L"扫描完成，共 " + std::to_wstring(jdks.size()) + L" 个版本，当前生效: " + currentVer);
         PrintWarning(L"如需切换版本，请使用 'jmt use <版本号>'");
-        return 0;
+        return ExitCode::Ok;
     }
 
     // PATH 中没有 JDK，选择最大版本
@@ -39,10 +36,10 @@ int SearchCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
     // 切换 PATH 到最大版本
     if (!JavaEnvService::setCurrentJdk(maxPath, EnvTarget::Auto)) {
         PrintError(L"设置当前 JDK 到 PATH 失败，请检查权限");
-        return 3;
+        return ExitCode::PermissionDenied;
     }
 
     PrintSuccess(L"扫描完成，共 " + std::to_wstring(jdks.size()) + L" 个版本，已自动设置: " + maxVer);
     PrintWarning(L"请重启终端使环境变量生效！");
-    return 0;
+    return ExitCode::Ok;
 }

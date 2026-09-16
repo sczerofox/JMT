@@ -36,7 +36,7 @@ static void PrintSubcommandDetail(const std::wstring& cmd) {
     }
 }
 
-int HelpCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
+ExitCode HelpCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     if (args.size() > 1) {
         auto* cmd = registry_.findCommand(args[1]);
         if (cmd) {
@@ -67,5 +67,5 @@ int HelpCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
         PrintInfo(L"  version            显示 JMT 版本信息");
         PrintInfo(L"  help [命令]        显示此帮助或命令详情");
     }
-    return 0;
+    return ExitCode::Ok;
 }

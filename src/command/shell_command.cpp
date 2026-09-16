@@ -4,7 +4,7 @@
 #include <windows.h>
 #include <shellapi.h>
 
-int ShellCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
+ExitCode ShellCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     // 获取 jmt.exe 的完整路径
     const std::wstring& exePath = ctx.paths.exePath;
 
@@ -25,7 +25,7 @@ int ShellCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx
     if ((INT_PTR)hInst <= 32) {
         DWORD err = GetLastError();
         PrintError(L"无法启动新终端，错误码: " + std::to_wstring(err));
-        return 1;
+        return ExitCode::BadArgs;
     }
 
     // ----- 新增：向当前控制台输入缓冲区发送 "exit\r\n" 命令 -----
@@ -69,5 +69,5 @@ int ShellCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx
     }
 
     PrintSuccess(L"已打开新终端，旧窗口即将执行 exit 命令关闭");
-    return 0;
+    return ExitCode::Ok;
 }

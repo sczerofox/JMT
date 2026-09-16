@@ -38,12 +38,12 @@ static bool PathExists(const std::wstring& path) {
     return (attr != INVALID_FILE_ATTRIBUTES);
 }
 
-int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
+ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     // ----- 0. 参数检查 -----
     if (args.size() < 2) {
         PrintError(L"用法: rollback <version> 或 rollback list");
         PrintInfo(L"  list  - 显示回收站中所有可回退的版本");
-        return 1;
+        return ExitCode::BadArgs;
     }
 
     // ----- 1. list 子命令（无需提权）-----
@@ -51,7 +51,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         std::wstring trashRoot = ctx.paths.trashDir;
         if (!IsDirectory(trashRoot)) {
             PrintInfo(L"回收站为空，没有可回退的版本");
-            return 0;
+            return ExitCode::Ok;
         }
 
         std::wstring searchPattern = trashRoot + L"\\jdk-*";
@@ -59,7 +59,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &fd);
         if (hFind == INVALID_HANDLE_VALUE) {
             PrintInfo(L"回收站为空，没有可回退的版本");
-            return 0;
+            return ExitCode::Ok;
         }
 
         std::vector<std::pair<std::wstring, std::wstring>> entries;
@@ -84,7 +84,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
         if (entries.empty()) {
             PrintInfo(L"回收站中没有有效的 JDK 备份（元数据可能丢失）");
-            return 0;
+            return ExitCode::Ok;
         }
 
         PrintInfo(L"回收站中可回退的 JDK 版本：");
@@ -93,12 +93,13 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         }
         PrintSuccess(L"共 " + std::to_wstring(entries.size()) + L" 个版本可回退");
         PrintInfo(L"使用 'rollback <版本号>' 恢复指定版本");
-        return 0;
+        return ExitCode::Ok;
     }
 
     // ----- 2. 提权（非 list 子命令）-----
     if (!ctx.isElevated) {
-        return toInt(ElevationGate::ensureElevated(args));
+        const ElevationDecision decision = ElevationGate::requestElevation(args, ctx);
+        if (!decision.proceed) return decision.code;
     }
 
     // ----- 3. 恢复指定版本 -----
@@ -107,7 +108,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
     std::wstring trashRoot = ctx.paths.trashDir;
     if (!IsDirectory(trashRoot)) {
         PrintError(L"回收站不存在，没有可回退的版本");
-        return 2;
+        return ExitCode::NotFound;
     }
 
     // 查找匹配的最新条目
@@ -116,7 +117,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
     HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &fd);
     if (hFind == INVALID_HANDLE_VALUE) {
         PrintError(L"未找到版本 " + version + L" 的回收条目");
-        return 2;
+        return ExitCode::NotFound;
     }
 
     std::wstring latestDir;
@@ -133,7 +134,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
     if (latestDir.empty()) {
         PrintError(L"未找到有效的回收条目");
-        return 2;
+        return ExitCode::NotFound;
     }
 
     std::wstring trashPath = JoinPath(trashRoot, latestDir);
@@ -141,7 +142,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
     std::wstring originalPath = ReadFileText(metaPath);
     if (originalPath.empty()) {
         PrintError(L"元数据丢失，无法还原");
-        return 4;
+        return ExitCode::IoOrNetwork;
     }
 
     originalPath = CleanPath(originalPath);
@@ -149,7 +150,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
     if (PathExists(originalPath)) {
         PrintError(L"原路径已存在，请手动处理: " + originalPath);
-        return 2;
+        return ExitCode::NotFound;
     }
 
     // ----- 确保目标父目录存在 -----
@@ -159,7 +160,7 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         parentDir = parentDir.substr(0, pos);
         if (!CreateDirectoryRecursive(parentDir)) {
             PrintError(L"无法创建目标父目录: " + parentDir + L" (错误码: " + std::to_wstring(GetLastError()) + L")");
-            return 3;
+            return ExitCode::PermissionDenied;
         }
     }
 
@@ -199,11 +200,11 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
                 }
             } else {
                 PrintError(L"xcopy 复制失败（退出码: " + std::to_wstring(exitCode) + L"），请手动恢复");
-                return 4;
+                return ExitCode::IoOrNetwork;
             }
         } else {
             PrintError(L"无法启动 xcopy，请手动将目录从 " + trashPath + L" 复制到 " + originalPath);
-            return 4;
+            return ExitCode::IoOrNetwork;
         }
     }
 
@@ -218,8 +219,8 @@ int RollbackCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         PrintWarning(L"请运行 'jmt search' 或 'jmt use' 重新配置环境变量（若需要）");
     } else {
         PrintError(L"还原失败，请检查权限或手动操作");
-        return 4;
+        return ExitCode::IoOrNetwork;
     }
 
-    return 0;
+    return ExitCode::Ok;
 }

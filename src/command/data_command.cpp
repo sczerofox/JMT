@@ -10,12 +10,12 @@
 
 namespace fs = std::filesystem;
 
-int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
+ExitCode DataCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     if (args.size() < 2) {
         PrintError(L"用法: data <子命令>");
         PrintInfo(L"  子命令: output    - 导出当前 JDK 列表到 .data\\ver_out.txt");
         PrintInfo(L"          input     - 从 .data\\ver_out.txt 导入并安装 JDK");
-        return 1;
+        return ExitCode::BadArgs;
     }
 
     const std::wstring& subCmd = args[1];
@@ -27,7 +27,7 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
         auto jdks = JdkScanService::scanJdks(false, ctx.paths.cacheFile, true);
         if (jdks.empty()) {
             PrintWarning(L"未找到任何合法 JDK，无法导出");
-            return 2;
+            return ExitCode::NotFound;
         }
 
         // 创建 .data 目录
@@ -46,17 +46,18 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
             PrintInfo(L"文件: " + outputPath);
         } else {
             PrintError(L"写入文件失败: " + outputPath);
-            return 4;
+            return ExitCode::IoOrNetwork;
         }
 
-        return 0;
+        return ExitCode::Ok;
     }
 
     // ---------- data input ----------
     if (subCmd == L"input") {
         // 提权
         if (!ctx.isElevated) {
-            return toInt(ElevationGate::ensureElevated(args));
+            const ElevationDecision decision = ElevationGate::requestElevation(args, ctx);
+            if (!decision.proceed) return decision.code;
         }
 
         // 1. 读取并解析 ver_out.txt
@@ -65,13 +66,13 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
         if (!IsFile(inputPath)) {
             PrintError(L"未找到导入文件: " + inputPath);
             PrintInfo(L"请先执行 'jmt data output' 导出列表");
-            return 2;
+            return ExitCode::NotFound;
         }
 
         std::wstring content = ReadFileText(inputPath);
         if (content.empty()) {
             PrintError(L"导入文件为空");
-            return 2;
+            return ExitCode::NotFound;
         }
 
         // 解析每一行：version|path
@@ -98,7 +99,7 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
         if (entries.empty()) {
             PrintError(L"导入文件格式错误，未解析到有效条目");
             PrintInfo(L"格式要求：每行 版本号|安装路径");
-            return 1;
+            return ExitCode::BadArgs;
         }
 
         // 2. 逐个检查并处理
@@ -180,11 +181,11 @@ int DataCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx)
             PrintInfo(L"请重启终端或运行 'jmt search' 刷新环境变量");
         }
 
-        return failCount > 0 ? 4 : 0;
+        return failCount > 0 ? ExitCode::IoOrNetwork : ExitCode::Ok;
     }
 
     // 未知子命令
     PrintError(L"未知子命令: " + subCmd);
     PrintInfo(L"可用子命令: output, input");
-    return 1;
+    return ExitCode::BadArgs;
 }

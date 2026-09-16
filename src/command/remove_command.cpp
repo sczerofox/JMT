@@ -13,7 +13,7 @@
 
 namespace fs = std::filesystem;
 
-int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
+ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     // 解析 --user / --sys
     EnvTarget target = EnvTarget::Auto;
     std::vector<std::wstring> filteredArgs;
@@ -26,9 +26,6 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
     }
 
     // 提权检查
-    if (!ctx.isElevated) {
-        return toInt(ElevationGate::ensureElevated(args));
-    }
 
     // 检查是否有子命令
     if (filteredArgs.size() < 2) {
@@ -39,7 +36,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         PrintInfo(L"           trash   - 永久清空回收站 (.trash)");
         PrintInfo(L"           <版本号> - 删除指定版本的 JDK，自动切换到最大版本（若为当前版本）");
         PrintInfo(L"  示例: remove env, remove all, remove 17, remove --user env");
-        return 1;
+        return ExitCode::BadArgs;
     }
 
     const std::wstring& subCmd = filteredArgs[1];
@@ -59,7 +56,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         RegistryOperator::setPath(newPath, target);
 
         PrintSuccess(L"JMT 自身目录已从 PATH 中移除");
-        return 0;
+        return ExitCode::Ok;
     }
 
     // ---------- remove all ----------
@@ -73,7 +70,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         int ch = _getwch();
         if (ch != L'y' && ch != L'Y') {
             PrintInfo(L"操作已取消");
-            return 0;
+            return ExitCode::Ok;
         }
         PrintInfo(L""); // 换行
 
@@ -150,7 +147,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         }
 
         PrintSuccess(L"完全清理完成");
-        return 0;
+        return ExitCode::Ok;
     }
 
     // ---------- remove temp ----------
@@ -158,16 +155,16 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         std::wstring tempDir = ctx.paths.tempDir;
         if (!IsDirectory(tempDir)) {
             PrintInfo(L".temp 目录不存在，无需清理");
-            return 0;
+            return ExitCode::Ok;
         }
         try {
             fs::remove_all(tempDir);
             PrintSuccess(L"已删除 .temp 目录");
         } catch (const std::exception& e) {
             PrintError(L"删除 .temp 目录失败: " + ToWideString(e.what()));
-            return 3;
+            return ExitCode::PermissionDenied;
         }
-        return 0;
+        return ExitCode::Ok;
     }
 
     // ---------- remove trash ----------
@@ -175,7 +172,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         std::wstring trashRoot = ctx.paths.trashDir;
         if (!IsDirectory(trashRoot)) {
             PrintInfo(L"回收站不存在，无需清理");
-            return 0;
+            return ExitCode::Ok;
         }
 
         PrintWarning(L"此操作将永久删除回收站中的所有 JDK 备份，不可恢复！");
@@ -183,7 +180,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         int ch = _getwch();
         if (ch != L'y' && ch != L'Y') {
             PrintInfo(L"操作已取消");
-            return 0;
+            return ExitCode::Ok;
         }
         PrintInfo(L""); // 换行
 
@@ -193,9 +190,9 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
         } catch (const std::exception& e) {
             std::wstring errMsg = ToWideString(e.what());
             PrintError(L"清空失败: " + errMsg);
-            return 3;
+            return ExitCode::PermissionDenied;
         }
-        return 0;
+        return ExitCode::Ok;
     }
 
     // ---------- remove <version> ----------
@@ -210,7 +207,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
             jdks = JdkScanService::scanJdks(true, ctx.paths.cacheFile, true);
             if (jdks.empty()) {
                 PrintWarning(L"未找到任何 JDK");
-                return 2;
+                return ExitCode::NotFound;
             }
         }
 
@@ -219,7 +216,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
                                [&](const auto& p) { return p.first == version; });
         if (it == jdks.end()) {
             PrintError(L"未找到版本 " + version + L" 的 JDK");
-            return 2;
+            return ExitCode::NotFound;
         }
 
         std::wstring jdkPath = it->second;
@@ -239,14 +236,14 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
                                               });
                 if (!JavaEnvService::setCurrentJdk(maxIt->second, target)) {
                     PrintError(L"切换到最大版本失败");
-                    return 3;
+                    return ExitCode::PermissionDenied;
                 }
                 PrintInfo(L"已自动切换到版本 " + maxIt->first);
             } else {
                 // 无其他版本，清除当前 JDK
                 if (!JavaEnvService::clearCurrentJdk(target)) {
                     PrintError(L"清除当前 JDK PATH 失败");
-                    return 3;
+                    return ExitCode::PermissionDenied;
                 }
                 PrintInfo(L"已清除当前 JDK PATH（无其他版本）");
             }
@@ -288,7 +285,7 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
                     PrintInfo(L"复制完成，原目录已删除");
                 } catch (const std::exception& e) {
                     PrintError(L"复制或删除失败: " + ToWideString(e.what()));
-                    return 4;
+                    return ExitCode::IoOrNetwork;
                 }
             } else {
                 PrintInfo(L"已移动到回收站: " + trashPath);
@@ -312,11 +309,11 @@ int RemoveCommand::execute(const std::vector<std::wstring>& args, JmtContext& ct
 
         PrintSuccess(L"JDK " + version + L" 已移至回收站并清理相关配置");
         PrintInfo(L"如需还原，请使用 'jmt rollback " + version + L"'");
-        return 0;
+        return ExitCode::Ok;
     }
 
     // 未知子命令
     PrintError(L"未知子命令: " + subCmd);
     PrintInfo(L"可用子命令: env, all, temp, trash, <版本号>");
-    return 1;
+    return ExitCode::BadArgs;
 }

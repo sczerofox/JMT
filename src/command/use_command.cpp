@@ -4,14 +4,11 @@
 #include "console/color_print.hpp"
 #include "app/elevation_gate.hpp"
 
-int UseCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
-    if (!ctx.isElevated) {
-        return toInt(ElevationGate::ensureElevated(args));
-    }
+ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
 
     if (args.size() < 2) {
         PrintError(L"缺少版本号，用法: use <version>");
-        return 1;
+        return ExitCode::BadArgs;
     }
     const std::wstring& ver = args[1];
 
@@ -27,15 +24,15 @@ int UseCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) 
     }
     if (!found) {
         PrintError(L"未找到版本 " + ver);
-        return 2;
+        return ExitCode::NotFound;
     }
 
     if (!JavaEnvService::setCurrentJdk(targetPath, EnvTarget::Auto)) {
         PrintError(L"切换失败，请确保有管理员权限");
-        return 3;
+        return ExitCode::PermissionDenied;
     }
 
     PrintSuccess(L"已切换 PATH 至版本 " + ver);
     PrintWarning(L"请重启终端使环境变量生效！");
-    return 0;
+    return ExitCode::Ok;
 }

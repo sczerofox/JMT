@@ -41,11 +41,8 @@ static bool MoveToTrash(const std::wstring& jdkPath, const std::wstring& version
     return true;
 }
 
-int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& ctx) {
+ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     // ----- 提权 -----
-    if (!ctx.isElevated) {
-        return toInt(ElevationGate::ensureElevated(args));
-    }
 
     // ----- 参数检查 -----
     if (args.size() < 2) {
@@ -53,7 +50,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         PrintInfo(L"可选参数: --mirror  (使用内置镜像加速下载)");
         PrintInfo(L"          exe     (强制下载 EXE 安装程序到 .temp，不自动安装)");
         PrintInfo(L"          java    (使用官方源下载很慢，自动解压安装)");
-        return 1;
+        return ExitCode::BadArgs;
     }
 
     // 解析参数
@@ -76,7 +73,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
     if (versionArg.empty()) {
         PrintError(L"请指定版本号，如 download 21");
-        return 1;
+        return ExitCode::BadArgs;
     }
 
     // 提取主版本号
@@ -90,7 +87,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         }
     } else {
         PrintError(L"无效的版本号格式，请输入数字，如 17");
-        return 1;
+        return ExitCode::BadArgs;
     }
 
     // ----- 检查是否已存在该版本 -----
@@ -111,7 +108,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         int ch = _getwch();
         if (ch != L'y' && ch != L'Y') {
             PrintInfo(L"操作已取消");
-            return 0;
+            return ExitCode::Ok;
         }
         PrintInfo(L""); // 换行
 
@@ -119,7 +116,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         std::wstring trashPath;
         if (!MoveToTrash(existingPath, majorVersion, ctx.paths.exeDir, trashPath)) {
             PrintError(L"移动旧版本到回收站失败，请手动删除 " + existingPath);
-            return 4;
+            return ExitCode::IoOrNetwork;
         }
         PrintInfo(L"旧版本已移至回收站: " + trashPath);
 
@@ -137,7 +134,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
                 // 无其他版本，清除 PATH 中的 JDK 路径
                 if (!JavaEnvService::clearCurrentJdk(EnvTarget::Auto)) {
                     PrintError(L"清除当前 JDK PATH 失败");
-                    return 3;
+                    return ExitCode::PermissionDenied;
                 }
                 PrintInfo(L"已清除当前 JDK PATH（无其他版本）");
             } else {
@@ -147,7 +144,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
                                               });
                 if (!JavaEnvService::setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
                     PrintError(L"切换到最大版本失败");
-                    return 3;
+                    return ExitCode::PermissionDenied;
                 }
                 PrintInfo(L"已切换至最大版本: " + maxIt->first);
             }
@@ -185,12 +182,12 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
 
     if (installPath == L"EXE_DOWNLOADED") {
         PrintInfo(L"JDK 安装程序已下载到 .temp 目录，请手动完成安装");
-        return 0;
+        return ExitCode::Ok;
     }
 
     if (installPath.empty()) {
         PrintError(L"下载或安装失败");
-        return 4;
+        return ExitCode::IoOrNetwork;
     }
 
     // ----- 安装成功，更新缓存并设置当前版本 -----
@@ -201,7 +198,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
         if (p == installPath || v == majorVersion) { // 若路径匹配或版本匹配
             if (!JavaEnvService::setCurrentJdk(p, EnvTarget::Auto)) {
                 PrintError(L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + v + L"'");
-                return 3;
+                return ExitCode::PermissionDenied;
             }
             foundNew = true;
             PrintSuccess(L"JDK " + v + L" 已安装并设为当前版本");
@@ -216,7 +213,7 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
                                       });
         if (!JavaEnvService::setCurrentJdk(maxIt->second, EnvTarget::Auto)) {
             PrintError(L"设置当前 JDK 到 PATH 失败，请手动执行 'jmt use " + maxIt->first + L"'");
-            return 3;
+            return ExitCode::PermissionDenied;
         }
         PrintSuccess(L"JDK 安装成功，已自动切换至最大版本 " + maxIt->first);
     } else {
@@ -224,5 +221,5 @@ int DownloadCommand::execute(const std::vector<std::wstring>& args, JmtContext& 
     }
 
     PrintInfo(L"请重启终端使环境变量生效（或新开终端）");
-    return 0;
+    return ExitCode::Ok;
 }
