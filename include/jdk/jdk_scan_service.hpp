@@ -6,6 +6,7 @@
 
 #include "app/app_paths.hpp"
 #include "platform/output.hpp"
+#include "jdk/version_match.hpp"
 
 class JdkScanService {
 public:
@@ -20,6 +21,10 @@ public:
     // 纯函数：只依赖文件系统，不依赖上下文，测试可直接调用
     static bool isValidJdk(const std::wstring& path);
     static std::wstring extractVersion(const std::wstring& path);
+
+    // 缓存格式（带 schema 标记；旧格式会被判为无效并要求重扫）
+    static std::wstring serializeCache(const std::vector<VersionCandidate>& jdks);
+    static bool parseCache(const std::wstring& content, std::vector<VersionCandidate>& out);
 
 private:
     const AppPaths& paths_;

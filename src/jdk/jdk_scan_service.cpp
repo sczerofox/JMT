@@ -1,5 +1,7 @@
 #include "jdk/jdk_scan_service.hpp"
+#include "common/java_version.hpp"
 #include "system/file_lock.hpp"
+#include "system/path_utils.hpp"
 #include "system/utils.hpp"
 #include "common/string_helper.hpp"
 #include <algorithm>
@@ -10,6 +12,9 @@ static const std::set<std::wstring> excludedDirs = {
         L"C:\\Windows", L"C:\\ProgramData", L"C:\\System Volume Information",
         L"$Recycle.Bin", L"System Volume Information", L"Recovery", L"Temp"
 };
+
+// 缓存 schema：写入时带上；读取时缺少该标记说明是旧缓存（只存主版本），需要重扫
+static const std::wstring kCacheHeader = L"#jmt-cache-v2";
 
 static void ScanDirectoryRecursive(const std::wstring& path, int depth, int maxDepth,
                                    std::vector<std::pair<std::wstring, std::wstring>>& result,
@@ -24,11 +29,14 @@ static void ScanDirectoryRecursive(const std::wstring& path, int depth, int maxD
         return;
 
     if (JdkScanService::isValidJdk(path)) {
-        std::wstring ver = JdkScanService::extractVersion(path);
-        if (!ver.empty() && seen.find(ver) == seen.end()) {
-            seen.insert(ver);
-            result.push_back({ver, path});
-            found++;
+        // 按路径去重：同一版本装了多份时（如 jdk-17 与 jdk-17.0.9 都是 17.0.9）都保留
+        const std::wstring key = PathUtils::normalize(path);
+        if (seen.insert(key).second) {
+            std::wstring ver = JdkScanService::extractVersion(path);
+            if (!ver.empty()) {
+                result.push_back({ver, path});
+                found++;
+            }
         }
     }
 
@@ -66,31 +74,54 @@ bool JdkScanService::isValidJdk(const std::wstring& path) {
 }
 
 std::wstring JdkScanService::extractVersion(const std::wstring& path) {
-    // 1. 优先从 release 文件读取
+    // 1. 优先从 release 文件读取 JAVA_VERSION（原样返回，不再截断成主版本）
     std::wstring releasePath = JoinPath(path, L"release");
     std::wstring content = ReadFileText(releasePath);
     if (!content.empty()) {
-        std::wregex pattern(L"JAVA_VERSION=\"(\\d+)(?:\\.(\\d+))?");
+        std::wregex pattern(L"JAVA_VERSION=\"([^\"]+)\"");
         std::wsmatch match;
         if (std::regex_search(content, match, pattern)) {
-            int major = std::stoi(match[1].str());
-            if (major == 1 && match.size() > 2 && !match[2].str().empty())
-                return match[2].str();  // "8"
-            else
-                return match[1].str();  // "17"
+            const JavaVersion version = JavaVersion::parse(match[1].str());
+            if (version.valid()) {
+                return version.raw;   // "17.0.9" / "22" / "1.8.0_202"
+            }
         }
     }
 
-    // 2. 从路径中提取（兼容 jdk1.8.0_202, jdk-17, jdk17）
-    std::wregex pathPattern(L"jdk(?:1\\.(\\d+)|[-_]?(\\d+))");
+    // 2. 从路径中提取（兼容 jdk-17.0.2 / jdk1.8.0_202 / jdk17 / openjdk-11.0.2）
+    std::wregex pathPattern(L"(?:jdk|openjdk)[-_]?(\\d+(?:[uU]\\d+)?(?:\\.\\d+)*(?:_\\d+)?)");
     std::wsmatch pathMatch;
     if (std::regex_search(path, pathMatch, pathPattern)) {
-        if (pathMatch[1].matched)
-            return pathMatch[1].str();   // "8"
-        else if (pathMatch[2].matched)
-            return pathMatch[2].str();   // "17"
+        const JavaVersion version = JavaVersion::parse(pathMatch[1].str());
+        if (version.valid()) {
+            return version.raw;
+        }
     }
     return L"";
+}
+
+std::wstring JdkScanService::serializeCache(const std::vector<VersionCandidate>& jdks) {
+    std::wstring content = kCacheHeader + L"\n";
+    for (const auto& [ver, path] : jdks) {
+        content += ver + L"|" + path + L"\n";
+    }
+    return content;
+}
+
+bool JdkScanService::parseCache(const std::wstring& content, std::vector<VersionCandidate>& out) {
+    out.clear();
+    if (content.rfind(kCacheHeader, 0) != 0) {
+        return false;   // 旧格式（无 schema 标记），调用方应重新扫描
+    }
+    const auto lines = StringHelper::split(content, L'\n', false);
+    for (const auto& line : lines) {
+        if (line.empty() || line[0] == L'#') continue;
+        const auto parts = StringHelper::split(line, L'|', false);
+        if (parts.size() >= 2) {
+            out.push_back({parts[0], parts[1]});
+        }
+    }
+    return true;
 }
 
 // 写入缓存（定义在 scanJdks 之前，确保可见）
@@ -101,10 +132,7 @@ void JdkScanService::writeCache(const std::vector<std::pair<std::wstring, std::w
         return;
     }
 
-    std::wstring content;
-    for (const auto& [ver, path] : jdks) {
-        content += ver + L"|" + path + L"\n";
-    }
+    const std::wstring content = serializeCache(jdks);
 
     if (!lock.writeAllText(content)) {
         out_.line(OutputLevel::Error, L"写入缓存文件失败: " + paths_.cacheFile);
@@ -123,23 +151,21 @@ std::vector<std::pair<std::wstring, std::wstring>> JdkScanService::scanJdks(
         if (lock.tryLock()) {
             std::wstring content = ReadFileText(paths_.cacheFile);
             if (!content.empty()) {
-                auto lines = StringHelper::split(content, L'\n', false);
-                for (auto& line : lines) {
-                    auto parts = StringHelper::split(line, L'|', false);
-                    if (parts.size() >= 2) {
-                        std::wstring ver = parts[0];
-                        std::wstring path = parts[1];
+                std::vector<VersionCandidate> cached;
+                if (parseCache(content, cached)) {
+                    for (const auto& [ver, path] : cached) {
                         if (JdkScanService::isValidJdk(path)) {
                             result.push_back({ver, path});
                         } else {
                             out_.line(OutputLevel::Debug, L"Cache entry invalid: " + path);
                         }
                     }
+                    if (result.size() != cached.size()) {
+                        writeCache(result);
+                    }
+                    return result;
                 }
-                if (result.size() != lines.size()) {
-                    writeCache(result);
-                }
-                return result;
+                out_.line(OutputLevel::Debug, L"缓存缺少 schema 标记（旧格式），重新扫描");
             }
         }
     }
