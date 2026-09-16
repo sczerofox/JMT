@@ -1,4 +1,6 @@
 #include "jdk/java_env_service.hpp"
+#include "common/java_version.hpp"
+#include "jdk/jdk_scan_service.hpp"
 #include "system/path_utils.hpp"
 #include "platform/output.hpp"
 #include "system/utils.hpp"
@@ -98,22 +100,24 @@ bool JavaEnvService::clearCurrentJdk(EnvTarget target) {
 
 namespace {
 
-// 在一段 PATH 里找第一个 JMT 管理的 JDK bin 条目并提取版本号
-std::wstring firstJdkVersionIn(const std::wstring& path) {
-    const auto entries = PathUtils::splitPath(path);
-    for (const auto& e : entries) {
-        if (IsJdkBinPath(e)) {
-            // 从路径中提取版本号：
-            //   D:\Program Files\Java\jdk-17\bin       -> 17
-            //   D:\Program Files\Java\jdk1.8.0_202\bin -> 8
-            std::wregex pattern(L"jdk(?:1\\.(\\d+)|[-_]?(\\d+))");
-            std::wsmatch match;
-            if (std::regex_search(e, match, pattern) && match.size() > 1) {
-                if (match[1].matched)
-                    return match[1].str();  // jdk1.8.x -> "8"
-                else if (match[2].matched)
-                    return match[2].str();  // jdk-17 / jdk17 -> "17"
-            }
+// 去掉尾部 \bin 得到 JDK 安装目录
+std::wstring parentOfBin(const std::wstring& binPath) {
+    std::wstring dir = binPath;
+    while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) {
+        dir.pop_back();
+    }
+    const size_t pos = dir.find_last_of(L"\\/");
+    return pos == std::wstring::npos ? std::wstring() : dir.substr(0, pos);
+}
+
+// 回退方案：直接从路径文本里解析版本（release 文件缺失时使用）
+std::wstring versionFromPathText(const std::wstring& text) {
+    static const std::wregex pattern(L"(?:jdk|openjdk)[-_]?(\\d+(?:[uU]\\d+)?(?:\\.\\d+)*(?:_\\d+)?)");
+    std::wsmatch match;
+    if (std::regex_search(text, match, pattern)) {
+        const JavaVersion version = JavaVersion::parse(match[1].str());
+        if (version.valid()) {
+            return version.raw;
         }
     }
     return L"";
@@ -124,9 +128,23 @@ std::wstring firstJdkVersionIn(const std::wstring& path) {
 std::wstring JavaEnvService::getCurrentVersion() {
     // Windows 上用户 PATH 优先于系统 PATH 生效，因此先看用户级再回退系统级
     for (EnvTarget scope : {EnvTarget::UserOnly, EnvTarget::SystemOnly}) {
-        const std::wstring version = firstJdkVersionIn(registry_.readPath(scope));
-        if (!version.empty()) {
-            return version;
+        for (const auto& entry : PathUtils::splitPath(registry_.readPath(scope))) {
+            if (!IsJdkBinPath(entry)) continue;
+
+            // 1) 读该 JDK 的 release：目录名往往只有主版本（jdk-17 实际是 17.0.9）
+            const std::wstring jdkDir = parentOfBin(entry);
+            if (!jdkDir.empty() && resolver_) {
+                const std::wstring resolved = resolver_(jdkDir);
+                if (!resolved.empty()) {
+                    return resolved;
+                }
+            }
+
+            // 2) 回退：从路径文本解析
+            const std::wstring parsed = versionFromPathText(entry);
+            if (!parsed.empty()) {
+                return parsed;
+            }
         }
     }
     return L"";

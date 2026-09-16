@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -8,7 +9,12 @@
 
 class JavaEnvService {
 public:
-    JavaEnvService(IRegistry& registry, IOutput& out) : registry_(registry), out_(out) {}
+    // 由「JDK 目录」解析真实版本（默认读该目录的 release 文件）；
+    // 注入假实现即可在单测里验证「当前版本」判定。
+    using VersionResolver = std::function<std::wstring(const std::wstring& jdkPath)>;
+
+    JavaEnvService(IRegistry& registry, IOutput& out, VersionResolver resolver = nullptr)
+            : registry_(registry), out_(out), resolver_(std::move(resolver)) {}
 
     // 设置当前使用的 JDK：删除所有已有 JDK bin 路径，添加新路径
     bool setCurrentJdk(const std::wstring& jdkPath, EnvTarget target = EnvTarget::Auto);
@@ -24,4 +30,5 @@ public:
 private:
     IRegistry& registry_;
     IOutput& out_;
+    VersionResolver resolver_;
 };
