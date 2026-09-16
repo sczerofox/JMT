@@ -6,6 +6,7 @@
 
 #include "app/app_paths.hpp"
 #include "platform/output.hpp"
+#include "jdk/download_plan.hpp"
 
 class JdkDownloadService {
 public:
@@ -17,6 +18,8 @@ public:
     std::wstring downloadFromMirror(const std::wstring& version, const std::wstring& installRoot = L"");
     // 仅官方 Adoptium 源
     std::wstring downloadFromOfficial(const std::wstring& version, const std::wstring& installRoot = L"");
+    // exe 参数：只下载 EXE 安装包到 .temp，不自动安装
+    std::wstring downloadInstallerOnly(const std::wstring& version);
 
     // 重新加载内置 + 外部映射（启动时调用一次）
     void reloadMappings();
@@ -46,9 +49,16 @@ private:
     void initBuiltinMappings();
     void loadExternalMappings();
     void ensureExternalMappingFiles();
-    std::wstring findZipUrl(const std::wstring& version);
-    std::wstring findExeUrl(const std::wstring& version);
-    bool isDemoPackage(const std::wstring& url);
+    const UrlList& zipUrlsFor(const std::wstring& version);
+    const UrlList& exeUrlsFor(const std::wstring& version);
+
+    // 计划执行：按 DownloadPlan 逐步尝试，成功即返回
+    std::wstring executePlan(const DownloadPlan& plan,
+                             const std::wstring& version,
+                             const std::wstring& installRoot);
+    bool tryZipSource(const std::wstring& url, const std::wstring& version, const std::wstring& targetDir);
+    std::wstring tryExeSource(const std::wstring& url, const std::wstring& version, const std::wstring& targetDir);
+    bool tryOfficialZip(const std::wstring& version, const std::wstring& targetDir);
 
     // 官方源（Adoptium API，手动解析 307 重定向）
     bool officialDownloadInfo(const std::wstring& version,

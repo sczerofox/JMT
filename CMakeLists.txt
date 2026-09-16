@@ -28,6 +28,7 @@ set(JMT_CORE_SOURCES
         src/app/app_runtime.cpp
         src/app/env_scope.cpp
         src/jdk/jdk_scan_service.cpp
+        src/jdk/download_plan.cpp
         src/jdk/java_env_service.cpp
         src/jdk/jdk_download_service.cpp
         src/jdk/jmt_path_service.cpp
