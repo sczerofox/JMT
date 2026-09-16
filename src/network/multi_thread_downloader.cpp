@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "network/multi_thread_downloader.hpp"
+#include "common/cancel_token.hpp"
 #include <windows.h>
 #include <winhttp.h>
 #include <mutex>
@@ -137,7 +138,7 @@ bool MultiThreadDownloader::downloadPart(const std::wstring& url, const PartInfo
     int64_t totalRead = 0;
 
     while (true) {
-        if (cancelled_) {
+        if (cancelled_ || globalCancelState().cancelled()) {
             out.close();
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
@@ -250,7 +251,7 @@ bool MultiThreadDownloader::download(const std::wstring& url,
             int64_t downloaded = 0;
             bool ok = false;
             for (int retry = 0; retry <= maxRetries_; ++retry) {
-                if (cancelled_) break;
+                if (cancelled_ || globalCancelState().cancelled()) break;
                 if (this->downloadPart(url, part, downloaded)) {
                     ok = true;
                     break;
@@ -282,7 +283,7 @@ bool MultiThreadDownloader::download(const std::wstring& url,
         if (t.joinable()) t.join();
     }
 
-    if (cancelled_) {
+    if (cancelled_ || globalCancelState().cancelled()) {
         cleanTempFiles(parts);
         if (onError) onError(L"下载已取消");
         return false;

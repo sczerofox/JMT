@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include "jdk/jdk_download_service.hpp"
+#include "common/cancel_token.hpp"
 #include "common/java_version.hpp"
 #include "jdk/jdk_scan_service.hpp"
 #include "platform/output.hpp"
@@ -168,12 +169,25 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
         captured.append(buffer, read);
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    // 等待结束；期间响应 Ctrl+C：直接终止 curl 子进程
+    while (WaitForSingleObject(pi.hProcess, 300) == WAIT_TIMEOUT) {
+        if (globalCancelState().cancelled()) {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 2000);
+            break;
+        }
+    }
     DWORD exitCode = 0;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(readEnd);
+
+    if (globalCancelState().cancelled()) {
+        DeleteFileW(destPath.c_str());
+        out_.line(OutputLevel::Warning, L"下载已取消");
+        return false;
+    }
 
     // 从输出里取最后一个 3 位数字作为 HTTP 状态码（-w "%{http_code}"）
     for (size_t i = captured.size(); i >= 3; --i) {
@@ -789,6 +803,10 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
     }
 
     for (size_t i = 0; i < plan.steps.size(); ++i) {
+        if (globalCancelState().cancelled()) {
+            out_.line(OutputLevel::Warning, L"下载已取消，停止尝试其余源");
+            return L"";
+        }
         const DownloadStep& step = plan.steps[i];
         const std::wstring order = L"（源 " + std::to_wstring(i + 1) + L"/" +
                                    std::to_wstring(plan.steps.size()) + L"）";

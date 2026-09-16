@@ -13,12 +13,24 @@
 #include "command/data_command.hpp"
 #include "console/repl_engine.hpp"
 #include "app/app_runtime.hpp"
+#include "common/cancel_token.hpp"
+#include <windows.h>
 #include "app/elevation_gate.hpp"
 #include "system/utils.hpp"
 #include "jdk/jdk_download_service.hpp"
 #include <vector>
 #include <memory>
 
+
+
+// 单次命令模式下的 Ctrl+C：置位取消开关，让下载/扫描尽快退出
+static BOOL WINAPI JmtCtrlHandler(DWORD ctrlType) {
+    if (ctrlType == CTRL_C_EVENT) {
+        globalCancelState().cancel();
+        return TRUE;
+    }
+    return FALSE;
+}
 int wmain(int argc, wchar_t* argv[]) {
     // 组合根：装配 Win32 适配器与服务实例
     AppRuntime runtime(AppPaths::fromExecutable(), argc == 1);

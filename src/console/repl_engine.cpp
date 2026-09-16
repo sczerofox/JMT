@@ -2,6 +2,7 @@
 #include "console/repl_utils.hpp"
 #include "platform/output.hpp"
 #include "app/elevation_gate.hpp"
+#include "common/cancel_token.hpp"
 #include "system/utils.hpp"
 #include <windows.h>
 #include <iostream>
@@ -11,6 +12,7 @@ static volatile sig_atomic_t g_interrupted = 0;
 static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
     if (ctrlType == CTRL_C_EVENT) {
         g_interrupted = 1;
+        globalCancelState().cancel();   // 正在下载/扫描时中断
         return TRUE;
     }
     return FALSE;
