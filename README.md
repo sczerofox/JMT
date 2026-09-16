@@ -268,11 +268,11 @@ jmt> exit
 
 以下行为来自当前源码实现，与直觉或旧版文档可能不同：
 
-1. **输出依赖真实控制台**：所有输出走 `WriteConsoleW`（`src/console/color_print.cpp`），把 stdout 重定向到文件或管道时看不到任何内容，只有退出码可用。
+1. **输出依赖真实控制台**：所有输出走 `WriteConsoleW`（`src/platform/console_output.cpp`），把 stdout 重定向到文件或管道时看不到任何内容，只有退出码可用。
 2. **`--user` / 用户级 PATH 降级不生效**：`RegistryOperator` 无论目标是系统还是用户都打开注册表相对路径 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`，该键在 `HKCU` 下不存在（用户级环境变量实际位于 `HKCU\Environment`），因此 `--user` 分支与「无权限时自动降级到用户 PATH」都不会真正写入，`remove env` 等命令仍会打印成功提示。
 3. **`download ... exe` 参数未生效**：`src/command/download_command.cpp` 只把 `exe` 识别为兼容参数后跳过，没有任何分支使用它，实际行为等同默认策略。
 4. **外部镜像源只在版本缺失时生效**：`findZipUrl` / `findExeUrl` 只返回该版本列表中的第一条 URL，内置版本（ZIP 11~26、EXE 6~13）始终使用内置第一条，追加在后面的外部 URL 不会被尝试。
-5. **交互模式提权体验有限**：REPL 顶层不做提权判断，由各命令自行调用 `runas`，会在新窗口执行并停留等待按键。
+5. **交互模式提权仍会另开窗口**：提权已统一到 `ElevationGate`（命令用元数据声明是否需要管理员权限），但成功提权后命令在**新窗口**执行并停留等待按键，REPL 会话本身继续留在原窗口。
 6. **版本号常量分散多处**：`src/command/version_command.cpp` 与 `src/console/repl_engine.cpp` 的 banner 各写一份，升级版本时需同步修改。
 
 ---
@@ -329,28 +329,32 @@ cmake -S . -B build -DJMT_BUILD_TESTS=OFF
 
 ```
 include/                          src/
-├── command/                      ├── command/          # 11 个命令实现
-│   ├── command_base.hpp          ├── jdk/              # 业务服务层
-│   ├── jmt_context.hpp           ├── system/           # Win32 封装
-│   ├── command_registry.hpp      ├── network/          # 多线程下载器
-│   └── *_command.hpp             ├── console/          # 彩色输出 / 进度 / REPL
-├── jdk/                          ├── common/           # 字符串工具
-│   ├── jdk_scan_service.hpp      └── main.cpp          # 入口：初始化、提权、分发
+├── app/                          ├── app/              # 组合根：路径 / 上下文 / 运行时 / 提权门禁
+│   ├── app_paths.hpp             ├── command/          # 11 个命令实现
+│   ├── app_context.hpp           ├── jdk/              # 业务服务层（实例类，注入端口）
+│   ├── app_runtime.hpp           ├── platform/         # 端口适配器：控制台输出 / 注册表 / 提权
+│   └── elevation_gate.hpp        ├── system/           # 无状态 Win32 工具
+├── command/                      ├── network/          # 多线程下载器
+│   ├── command_base.hpp          ├── console/          # REPL
+│   ├── command_registry.hpp      └── main.cpp          # 入口：装配、分发（调 AppRuntime）
+│   └── *_command.hpp
+├── platform/                     resources/
+│   ├── output.hpp                ├── app.rc            # 图标资源
+│   ├── registry.hpp              └── app.ico
+│   ├── elevator.hpp
+│   └── win_registry.hpp
+├── jdk/
+│   ├── jdk_scan_service.hpp
 │   ├── java_env_service.hpp
 │   ├── jdk_download_service.hpp
 │   └── jmt_path_service.hpp
-├── system/                       resources/
-│   ├── registry_operator.hpp     ├── app.rc            # 图标资源
-│   ├── path_utils.hpp            └── app.ico
-│   ├── elevation_helper.hpp
-│   ├── file_lock.hpp
-│   └── utils.hpp
+├── system/{path_utils,file_lock,utils}.hpp
 ├── network/multi_thread_downloader.hpp
-├── console/{color_print,console_progress,repl_engine,repl_utils}.hpp
-└── common/string_helper.hpp
+├── console/{repl_engine,repl_utils}.hpp
+└── common/{string_helper,exit_code,result}.hpp
 ```
 
-模块依赖方向：`common` → `system` / `network` / `console` → `jdk` → `command`，`main.cpp` 为聚合入口，无头文件循环依赖。
+模块依赖方向：`common` → `platform` / `system` / `network` → `jdk` → `command` → `app`，`main.cpp` 只做装配与分发；端口层不含 `windows.h`，命令与服务只依赖端口。
 
 ---
 

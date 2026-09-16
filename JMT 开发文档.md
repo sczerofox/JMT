@@ -106,18 +106,20 @@ JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for No
 ```cpp
 #include "command/command_base.hpp"
 #include "jdk/jdk_scan_service.hpp"
-#include "system/registry_operator.hpp"
-#include "console/color_print.hpp"
+#include "platform/output.hpp"
+#include "app/app_context.hpp"
 ```
 
 ```
 include/                       src/
+├── app/                       ├── app/        app_paths / app_context / app_runtime / elevation_gate
 ├── command/                   ├── command/    command_registry.cpp + 11 个 *_command.cpp
-├── jdk/                       ├── jdk/        4 个服务实现
-├── system/                    ├── system/     5 个 Win32 封装实现
+├── jdk/                       ├── jdk/        4 个服务实现（实例类，注入端口）
+├── platform/                  ├── platform/   console_output / win_registry / win_elevator（端口适配器）
+├── system/                    ├── system/     path_utils / file_lock / utils（无状态工具）
 ├── network/                   ├── network/    multi_thread_downloader.cpp
-├── console/                   ├── console/    color_print / console_progress / repl_*
-└── common/                    ├── common/     string_helper.cpp
+├── console/                   ├── console/    repl_engine / repl_utils
+└── common/                    ├── common/     string_helper.cpp + exit_code.hpp / result.hpp
                                └── main.cpp    入口（不属于 jmt_core）
 resources/
 ├── app.rc                     仅包含 IDI_ICON1 ICON "app.ico"
@@ -125,18 +127,30 @@ resources/
 tests/                         自带框架 + CTest（.gitignore 排除，仓库不发布）
 ```
 
-依赖方向：`common` → `system` / `network` / `console` → `jdk` → `command`；`main.cpp` 为聚合入口。命令层可以调用任意服务层与支撑层，反向依赖不存在（头文件层面无循环包含）。
+依赖方向：`common`（纯值类型）→ `platform`（端口 + Win32 适配器）/ `system` / `network` → `jdk`（服务）→ `command`（用例）→ `app`（组合根）；`main.cpp` 只做装配与分发。端口层刻意不含 `windows.h`，命令层与服务层只依赖端口，不直接触碰注册表/控制台。
 
 ### 2.3 核心抽象
 
-**JmtContext**（`include/command/jmt_context.hpp`）
+**AppContext**（`include/app/app_context.hpp`）+ **AppPaths**（`include/app/app_paths.hpp`）
 
 ```cpp
-struct JmtContext {
-    std::wstring exeDirectory;    // jmt.exe 所在目录（无尾随反斜杠）
-    std::wstring cacheFilePath;   // exeDirectory + "\\.jmt_cache"
-    bool isInteractive;           // argc == 1
-    bool isElevated;              // ElevationHelper::IsElevated()
+struct AppPaths {                 // 运行期路径的唯一来源
+    std::wstring exeDir, exePath, cacheFile, tempDir, trashDir, repoDir, dataDir;
+    static AppPaths rootedAt(const std::wstring& root);   // 测试指向临时目录
+    static AppPaths fromExecutable();
+};
+
+struct AppContext {               // 命令层可见的全部依赖
+    AppPaths paths;
+    IOutput* out = nullptr;       // 输出端口
+    IRegistry* registry = nullptr;// 环境变量端口
+    IElevator* elevator = nullptr;// 提权端口
+    JdkScanService* scan = nullptr;
+    JavaEnvService* env = nullptr;
+    JdkDownloadService* download = nullptr;
+    JmtPathService* jmtPath = nullptr;
+    bool isInteractive = false;
+    bool isElevated = false;
 };
 ```
 
@@ -146,7 +160,9 @@ struct JmtContext {
 class CommandBase {
 public:
     virtual ~CommandBase() = default;
-    virtual int execute(const std::vector<std::wstring>& args, JmtContext& ctx) = 0;
+    [[nodiscard]] virtual std::wstring name() const = 0;                 // L"use"
+    [[nodiscard]] virtual bool requiresElevation() const { return false; }
+    virtual ExitCode execute(const std::vector<std::wstring>& args, AppContext& ctx) = 0;
     [[nodiscard]] virtual std::wstring getHelp() const = 0;
 };
 
@@ -159,11 +175,33 @@ public:
 
 命令名是大小写敏感的精确匹配，`args[0]` 是命令名本身（REPL 与单次模式一致）。
 
-**环境变量目标**（`include/system/registry_operator.hpp`）
+**端口**（`include/platform/`，均不含 `windows.h`）
 
 ```cpp
-enum class EnvTarget { Auto, SystemOnly, UserOnly };
+enum class EnvTarget { Auto, SystemOnly, UserOnly };        // platform/registry.hpp
+
+class IOutput {                                             // platform/output.hpp
+    virtual void line(OutputLevel level, const std::wstring& text) = 0;
+    virtual void progress(const std::wstring& text) = 0;
+    virtual void clearProgress() = 0;
+};
+
+class IRegistry {                                           // platform/registry.hpp
+    virtual std::wstring readEnv(const std::wstring& name, EnvTarget) = 0;
+    virtual bool writeEnv(const std::wstring& name, const std::wstring& value, EnvTarget) = 0;
+    virtual bool deleteEnv(const std::wstring& name, EnvTarget) = 0;
+    virtual std::vector<std::wstring> listEnvNames(EnvTarget) = 0;
+    virtual std::wstring readPath(EnvTarget) = 0;
+    virtual bool writePath(const std::wstring& path, EnvTarget) = 0;
+};
+
+class IElevator {                                           // platform/elevator.hpp
+    virtual bool isElevated() = 0;
+    virtual bool relaunchElevated(const std::wstring& commandLine) = 0;
+};
 ```
+
+**ExitCode / Status / Result**（`include/common/exit_code.hpp`、`result.hpp`）：命令返回 `ExitCode`（数值仍是 0~4，见 8.1），服务可用 `Status` / `Result<T>` 携带错误文案。
 
 ---
 
@@ -348,24 +386,26 @@ static void reloadMappings();
 
 ---
 
-## 5. 系统与基础设施
+## 5. 端口与基础设施
 
-### 5.1 RegistryOperator — 注册表环境变量
+### 5.1 WinRegistry — 注册表环境变量（IRegistry 的 Win32 适配器）
 
 ```cpp
-static bool writeEnvString(const std::wstring& key, const std::wstring& value, EnvTarget target = EnvTarget::Auto);
-static std::wstring readEnvString(const std::wstring& key, EnvTarget target = EnvTarget::Auto);
-static bool deleteEnvString(const std::wstring& key, EnvTarget target = EnvTarget::Auto);
-static std::wstring getPath(EnvTarget target);
-static bool setPath(const std::wstring& path, EnvTarget target);
-static std::vector<std::wstring> enumerateEnvValueNames(EnvTarget target);
+class WinRegistry : public IRegistry {
+    std::wstring readEnv(const std::wstring& name, EnvTarget target = EnvTarget::Auto) override;
+    bool writeEnv(const std::wstring& name, const std::wstring& value, EnvTarget target = EnvTarget::Auto) override;
+    bool deleteEnv(const std::wstring& name, EnvTarget target = EnvTarget::Auto) override;
+    std::vector<std::wstring> listEnvNames(EnvTarget target = EnvTarget::Auto) override;
+    std::wstring readPath(EnvTarget target) override;
+    bool writePath(const std::wstring& path, EnvTarget target) override;
+};
 ```
 
 - 根键：`EnvTarget::SystemOnly → HKEY_LOCAL_MACHINE`，`UserOnly → HKEY_CURRENT_USER`，`Auto` 先系统后用户
 - 子键固定为 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`（对 `HKCU` 而言该路径不存在，见 10.4）
 - 值类型：`REG_EXPAND_SZ`，读取时接受 `REG_EXPAND_SZ` 与 `REG_SZ`
 - `Auto` 模式在系统写入失败后自动尝试用户分支，因此失败会静默返回 `false`，调用方需自行处理
-- 写/删成功后调用 `BroadcastEnvironmentChange()`：`SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, L"Environment", SMTO_ABORTIFHUNG, 10000)`；首次返回 0（超时/失败）时 `Sleep(500)` 后用 5 秒超时重试一次，两次都失败只写 `PrintDebug` 日志，不影响注册表结果
+- 写/删成功后调用 `BroadcastEnvironmentChange()`：`SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, L"Environment", SMTO_ABORTIFHUNG, 10000)`；首次返回 0（超时/失败）时 `Sleep(500)` 后用 5 秒超时重试一次，两次都失败只写调试日志（`OutputDebugStringW`，仅 Debug 构建），不影响注册表结果
 
 ### 5.2 PathUtils — PATH 字符串处理
 
@@ -381,17 +421,20 @@ static std::vector<std::wstring> addUniqueEntry(const std::vector<std::wstring>&
 
 - `splitPath` 跳过空项，保留 `%VAR%` 原样（不做环境变量展开）
 - 比较只统一大小写与尾部分隔符，**不统一 `/` 与 `\`**（已知限制，单元测试已固化该语义）
-- 只做字符串级增删，注册表读写由 `RegistryOperator` 负责
+- 只做字符串级增删，注册表读写由 `IRegistry`（`WinRegistry`）负责
 
-### 5.3 ElevationHelper — 提权
+### 5.3 WinElevator — 提权适配器
 
 ```cpp
-static bool IsElevated();
-static bool RelaunchElevated(const std::wstring& commandLine);
+class WinElevator : public IElevator {   // src/platform/win_elevator.cpp
+    bool isElevated() override;
+    bool relaunchElevated(const std::wstring& commandLine) override;
+};
 ```
 
-- `IsElevated`：`OpenProcessToken(TOKEN_QUERY)` + `GetTokenInformation(TokenElevation)`
-- `RelaunchElevated`：把当前 exe 路径与参数拼成 `cmd /c "<exe> <args> & pause"`，以 `runas` 通过 `ShellExecuteW` 异步启动；返回 `HINSTANCE > 32` 表示成功。父进程随后 `return 0`，实际命令在新控制台窗口中执行
+- `isElevated`：`OpenProcessToken(TOKEN_QUERY)` + `GetTokenInformation(TokenElevation)`
+- `relaunchElevated`：把当前 exe 路径与参数拼成 `cmd /c "<exe> <args> & pause"`，以 `runas` 通过 `ShellExecuteW` 异步启动；返回 `HINSTANCE > 32` 表示成功。父进程随后退出，实际命令在新控制台窗口中执行
+- 调用方不再直接用这个适配器，而是走 7.1 的 `ElevationGate`
 
 ### 5.4 FileLock — 跨进程文件锁
 
@@ -399,7 +442,7 @@ static bool RelaunchElevated(const std::wstring& commandLine);
 
 ### 5.5 system/utils — 文件与字符串工具
 
-`GetExeDirectory()`、`GetAvailableDrives()`（仅固定盘）、`IsDirectory()` / `IsFile()`、`JoinPath()`、`ReadFileText()`（多编码嗅探）、`WriteFileText()`（UTF-8 带 BOM + 覆盖写）、`ToWideString()`（ANSI → 宽字符）。控制台初始化 `InitConsole()` 属于 `console/color_print`。
+`GetExeDirectory()`（仅 `AppPaths::fromExecutable()` 使用）、`GetAvailableDrives()`（仅固定盘）、`IsDirectory()` / `IsFile()`、`JoinPath()`、`ReadFileText()`（多编码嗅探）、`WriteFileText()`（UTF-8 带 BOM + 覆盖写）、`ToWideString()`（ANSI → 宽字符）。控制台初始化由 `ConsoleOutput::init()` 负责。
 
 ### 5.6 MultiThreadDownloader — WinHTTP 分片下载
 
@@ -419,9 +462,8 @@ bool download(const std::wstring& url, const std::wstring& destPath,
 
 ### 5.7 console 模块
 
-- `color_print.cpp`：`InitConsole()` 设置代码页 UTF-8 并在支持时开启虚拟终端；`PrintSuccess/PrintError/PrintInfo/PrintWarning` 用 ANSI 颜色 + `WriteConsoleW` 输出，`PrintDebug` 仅在 `_DEBUG` 构建生效；`PrintProgress` 覆盖当前行输出
-- `console_progress.cpp`：`ConsoleProgress::ClearLine()` 用空格填充当前行并复位光标，供扫描结束清理进度行
-- `repl_engine.cpp`：交互循环（banner、`std::getline(std::wcin, line)`、`SetConsoleCtrlHandler` 捕获 `CTRL_C_EVENT` 后重显提示符、`exit` / `quit` 退出、未知命令提示）；命令返回非 0 时用 `PrintDebug` 输出返回码
+- `ConsoleOutput`（`src/platform/console_output.cpp`）：`init()` 设置代码页 UTF-8 并在支持时开启虚拟终端；`line()` 按等级加 `[INFO]/[SUCCESS]/[WARN]/[ERROR]/[DEBUG]` 前缀并用 ANSI 颜色 + `WriteConsoleW` 输出，Debug 等级仅在 `_DEBUG` 构建生效；`progress()` 覆盖当前行、`clearProgress()` 清空进度行。`NullOutput` 用于静默场景
+- `repl_engine.cpp`：交互循环（banner、`std::getline(std::wcin, line)`、`SetConsoleCtrlHandler` 捕获 `CTRL_C_EVENT` 后重显提示符、`exit` / `quit` 退出、未知命令提示）；每条命令先经 `ElevationGate::ensure` 再执行，命令返回非 `Ok` 时用 Debug 输出返回码
 - `repl_utils.cpp`：`splitCommandLine` 按空格切分并支持双引号包裹
 
 ---
@@ -503,12 +545,23 @@ main（不提权）→ DataCommand::execute(["data","input"])
 
 ## 7. 提权策略
 
-### 7.1 两处提权入口
+### 7.1 唯一提权入口 ElevationGate
 
-JMT 的提权判断存在于两个位置，最终行为一致（`runas` 重启自身，命令在新窗口执行，父进程返回 `0`）：
+提权判断集中在 `app/elevation_gate.hpp`，由命令元数据驱动，`main.cpp` 与 `REPL` 共用同一条路径：
 
-1. **`src/main.cpp` 单次命令模式**：`needsAdmin = (cmd == "use" || "env" || "remove" || "search" || "download")`，未提权且不满足豁免条件时提前重启。`rollback` 与 `data` 不在此列表，由命令内部处理；列表中的命令内部**也会**再检查一次（因此 REPL 与单次模式行为一致）。
-2. **命令内部**：`SearchCommand` / `UseCommand` / `EnvCommand` / `RemoveCommand` / `DownloadCommand` / `DataCommand(input)` / `RollbackCommand(非 list)` 各自在开头检查 `ctx.isElevated`。
+```cpp
+// 命令声明自己是否需要管理员权限
+[[nodiscard]] bool requiresElevation() const override { return true; }   // use/env/remove/search/download
+
+// 调用方（main / REPL）
+const ElevationDecision decision = ElevationGate::ensure(command->requiresElevation(), args, ctx);
+if (!decision.proceed) return toInt(decision.code);   // 已启动提权进程或提权失败
+```
+
+- `ElevationDecision{proceed, code}`：`proceed == false` 表示「已启动提权进程（`code == Ok`）」或「提权失败（`code == PermissionDenied`，对应退出码 3）」，调用方据此停止执行当前进程的命令
+- `data input` 与 `rollback <版本>` 这类按子命令提权的命令，使用 `ElevationGate::requestElevation(args, ctx)`（无条件请求提权）
+- 命令行拼接（含空格参数加引号）由 `ElevationGate::buildCommandLine` 统一实现；提示语固定为「需要管理员权限，正在请求提权...」，失败提示「提权失败，请手动以管理员身份运行」
+- 骨架阶段之前，main 与 7 个命令各自复制了一份等价实现（语义已分叉）；现在命令内部不再有任何提权代码
 
 `main.cpp` 中的豁免分支只覆盖 `remove` 带 `--user`（以及一个永远不会命中的 `search --user` 分支），而 `RemoveCommand` 内部并无同样豁免，因此该豁免实际被命令层覆盖（见 10.4）。
 
@@ -664,24 +717,56 @@ build/jmt_tests.exe --suite path_utils
 
 | # | 位置 | 现象 | 影响 |
 |---|------|------|------|
-| 1 | `src/system/registry_operator.cpp`（`openEnvKey`） | 无论 `EnvTarget` 为何，子键固定为 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`；该相对路径在 `HKCU` 下不存在（用户环境变量实际在 `HKCU\Environment`） | `--user` / `--sys` 的用户分支、`Auto` 的自动降级全部失效；`remove env` 等仍打印成功提示（返回值被忽略） |
-| 2 | `include/console/color_print.hpp`（`PrintColored`） | 输出固定使用 `WriteConsoleW` | stdout 被重定向到文件或管道时没有任何输出，集成测试只能断言退出码 |
+| 1 | `src/platform/win_registry.cpp`（`openEnvKey`） | 无论 `EnvTarget` 为何，子键固定为 `SYSTEM\CurrentControlSet\Control\Session Manager\Environment`；该相对路径在 `HKCU` 下不存在（用户环境变量实际在 `HKCU\Environment`） | `--user` / `--sys` 的用户分支、`Auto` 的自动降级全部失效；`remove env` 等仍打印成功提示（返回值被忽略）。阶段 1 修复，并同时把 `--user` 的免提权语义建立在可测试的端口上 |
+| 2 | `src/platform/console_output.cpp`（`writeLine`） | 输出固定使用 `WriteConsoleW` | stdout 被重定向到文件或管道时没有任何输出，集成测试只能断言退出码。阶段 1 在 `ConsoleOutput` 内加非控制台回退后，输出即可被捕获（`IOutput` 已就位，测试可注入自己的实现） |
 | 3 | `src/jdk/jdk_download_service.cpp`（`findZipUrl` / `findExeUrl`） | 只取列表中第 0 条 URL | 每个内置版本的多个补丁 URL、以及追加在其后的外部 `.repo` 自定义源都不会被尝试；「多源回退」实际是「镜像 ZIP → 镜像 EXE → 官方」三层，而非同层多 URL 轮询 |
 | 4 | `src/command/download_command.cpp` | `exe` 参数只被识别后跳过，没有任何分支使用 | `jmt download 8 exe` 与默认策略等价，不会强制只下载 EXE |
-| 5 | `src/command/help_command.cpp` | `help <未知命令>` 打印错误后仍 `return 0` | 脚本无法通过退出码判断帮助参数是否有效 |
-| 6 | `src/main.cpp` | `remove --user` 的免提权分支被 `RemoveCommand` 内部的提权检查覆盖 | 免提权使用用户 PATH 的路径实际走不通（叠加问题 1） |
-| 7 | `src/console/color_print.cpp` | `PrintProgress` 以 `info.dwSize.X` 填充整行，未处理控制台换行/滚动边界 | 进度行在窗口边缘可能残留字符 |
+| 5 | `src/command/help_command.cpp` | `help <未知命令>` 打印错误后仍 `return ExitCode::Ok` | 脚本无法通过退出码判断帮助参数是否有效 |
+| 6 | `src/app/elevation_gate.cpp` | 提权提示语在骨架阶段统一为「需要管理员权限，正在请求提权...」 | 仅提示文案差异（原先 main 用的是「此操作需要管理员权限，正在请求...」），行为与退出码不变 |
+| 7 | `src/platform/console_output.cpp` | `progress()` 以 `info.dwSize.X` 填充整行，未处理控制台换行/滚动边界 | 进度行在窗口边缘可能残留字符 |
 | 8 | `src/network/multi_thread_downloader.cpp` | `DownloadProgress.speed` 恒为 0 | 界面无法显示速度；`calcPercent` 在拿不到总大小时返回 `-1` |
 | 9 | `src/command/version_command.cpp` / `src/console/repl_engine.cpp` | 版本号与 banner 各自硬编码 | 升级版本需三处同步（含文档），无单一数据源 |
 | 10 | `resources/app.rc` | 只有图标，没有 `VERSIONINFO` 资源 | 文件属性页看不到版本信息，只能靠 `jmt version` |
 | 11 | `src/jdk/jdk_scan_service.cpp` | 同版本 JDK 只保留先扫描到的那一份（`seen` 去重）；扫描深度固定 3 层 | 多份同版本安装无法在 `list` 中共存；深层目录中的 JDK 不会被发现 |
-| 12 | `src/command/search_command.cpp` / `remove`/`download` 中的 `std::stoi(版本号)` | 版本号必须能转成整数 | 缓存中出现非数字版本号会抛出异常（由外层 `try-catch` 转换为退出码 1） |
+| 12 | `src/command/search_command.cpp` / `remove`/`download` 中的 `std::stoi(版本号)` | 版本号必须能转成整数 | 缓存中出现非数字版本号会抛出异常（由外层 `try-catch` 转换为退出码 1）；阶段 3 引入 `JavaVersion` 结构体后消除 |
 
 ### 10.5 本地资料（不随仓库发布）
 
 - `jdk下载分析数据.txt`：镜像源可用性实测记录（南大 / 清华 TUNA / 华为云 / Adoptium 等），可作为扩充内置映射的参考
 - `本次需求文档.txt`：需求草稿（当前为空）
 - `CLAUDE.md`：面向 AI 协作工具的项目说明
+
+---
+
+## 11. 架构骨架（阶段 0）现状与后续阶段
+
+阶段 0 的目标是「不改行为地把缝撬开」，已在 `codex/arch-skeleton` 分支按 9 个提交完成：
+
+| 提交 | 内容 |
+|------|------|
+| skeleton/1 | `ExitCode` / `Error` / `Status` / `Result<T>`（`common/`） |
+| skeleton/2 | 输出端口 `IOutput` + `ConsoleOutput` / `NullOutput`（`platform/output.hpp`） |
+| skeleton/3 | `AppPaths` 收口运行期路径，`AppContext` 取代 `JmtContext` 的前身 |
+| skeleton/4 | 环境变量端口 `IRegistry`（`EnvTarget` 迁入端口层） |
+| skeleton/5 | 提权端口 `IElevator` + 唯一入口 `ElevationGate`，删除 7 处命令内提权代码 |
+| skeleton/6 | `AppContext` + 命令元数据（`name()` / `requiresElevation()`）+ 命令返回 `ExitCode` |
+| skeleton/7a | 扫描 / 环境 / JMT 自身 PATH 服务改为实例并注入端口，新增 `AppRuntime` 组合根 |
+| skeleton/7b | 下载服务改为实例（映射表不再静态、约 90 处输出改走端口） |
+| skeleton/8 | 删除输出过渡层与旧适配器：`color_print.*`、`console_progress.*`、`system/registry_operator.*`、`system/elevation_helper.*` |
+
+**现在可以做到的事**（阶段 0 的收益）：
+
+- 给命令注入 `NullOutput` / 自定义 `IOutput`、内存版 `IRegistry`、假的 `IElevator`，用 `AppContext` 直接构造被测命令，无需触碰真实注册表与控制台
+- 服务层不再有静态状态：`JdkDownloadService` 的映射表是实例成员，重复创建互不影响
+- 提权、输出、环境变量、路径四件事各只有一个入口，新增命令只需实现 `CommandBase` 的 4 个方法与注册
+
+**明确的下一步**（阶段 1 起，尚未开始）：
+
+1. 修 `WinRegistry` 的用户级分支（`HKCU\Environment`）与 `--user` 语义，并补 PATH 相关集成测试
+2. `ConsoleOutput` 在非控制台句柄时回退到 `WriteFile`（stdout 可重定向，测试可断言文案）
+3. 下载多 URL 轮询与 `exe` 参数生效；`isDemoPackage` 从「仅警告」改为「跳过」
+4. 取消与速度上报（`IElevator`/`IOutput` 之外新增 progress/cancel 端口）
+5. `JavaVersion` 结构体与缓存 schema 版本；并行扫描
 
 ---
 
