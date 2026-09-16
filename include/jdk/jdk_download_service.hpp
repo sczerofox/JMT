@@ -5,12 +5,14 @@
 #include <vector>
 
 #include "app/app_paths.hpp"
+#include "network/host_throttle.hpp"
 #include "platform/output.hpp"
 #include "jdk/download_plan.hpp"
 
 class JdkDownloadService {
 public:
-    JdkDownloadService(const AppPaths& paths, IOutput& out) : paths_(paths), out_(out) {}
+    JdkDownloadService(const AppPaths& paths, IOutput& out, HostThrottle& throttle)
+            : paths_(paths), out_(out), throttle_(throttle) {}
 
     // 默认策略：镜像 ZIP → 镜像 EXE → 官方 ZIP；返回安装目录 / L"EXE_DOWNLOADED" / 空串
     std::wstring downloadAndInstall(const std::wstring& version, const std::wstring& installRoot = L"");
@@ -31,16 +33,17 @@ private:
     std::map<std::wstring, UrlList> exeMap_;
     const AppPaths& paths_;
     IOutput& out_;
+    HostThrottle& throttle_;   // 镜像友好：并发/间隔/预算/退避/429 拉黑
 
     // 目录与临时文件（此前散落在各处的 GetExeDirectory() + 字面量拼接）
     std::wstring tempDirectory();
     std::wstring repoDirectory();
-    std::wstring tempDownloadPath(const std::wstring& ext);
+    std::wstring tempDownloadPath(const std::wstring& ext, const std::wstring& url);
 
     // 下载与解压
-    bool downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath);
-    bool downloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath);
-    bool downloadFile(const std::wstring& url, const std::wstring& destPath);
+    bool downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath, int& outStatus);
+    bool downloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath, int& outStatus);
+    bool downloadFile(const std::wstring& url, const std::wstring& destPath, int& outStatus);
     bool extractZip(const std::wstring& zipPath, const std::wstring& destDir);
     bool isValidZipFile(const std::wstring& path);
     bool fixNestedJdkDirectory(const std::wstring& targetDir);

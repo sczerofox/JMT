@@ -6,6 +6,7 @@
 #include "jdk/jdk_download_service.hpp"
 #include "jdk/jdk_scan_service.hpp"
 #include "jdk/jmt_path_service.hpp"
+#include "network/host_throttle.hpp"
 #include "platform/elevator.hpp"
 #include "platform/output.hpp"
 #include "platform/win_registry.hpp"
@@ -24,6 +25,7 @@ private:
     ConsoleOutput output_;
     WinRegistry registry_;
     WinElevator elevator_;
+    HostThrottle throttle_;   // 下载节流策略（防镜像封 IP）
     AppContext ctx_;          // 先建上下文：服务会引用 ctx_.paths
     JdkScanService scan_;
     JavaEnvService env_;

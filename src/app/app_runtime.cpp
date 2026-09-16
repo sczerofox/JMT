@@ -6,7 +6,7 @@ AppRuntime::AppRuntime(const AppPaths& paths, bool isInteractive)
           env_(registry_, output_, [](const std::wstring& jdkPath) {
               return JdkScanService::extractVersion(jdkPath);
           }),
-          download_(ctx_.paths, output_),
+          download_(ctx_.paths, output_, throttle_),
           jmtPath_(registry_, output_) {
     output_.init();          // 等价于旧的 InitConsole()
 

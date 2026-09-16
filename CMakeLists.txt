@@ -44,6 +44,7 @@ set(JMT_CORE_SOURCES
         src/console/repl_engine.cpp
         src/console/repl_utils.cpp
         src/network/multi_thread_downloader.cpp
+        src/network/host_throttle.cpp
 )
 
 add_library(jmt_core STATIC ${JMT_CORE_SOURCES})

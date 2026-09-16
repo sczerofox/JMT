@@ -95,14 +95,26 @@ bool JdkDownloadService::fixNestedJdkDirectory(const std::wstring& targetDir) {
     }
 }
 
-// ---------- 辅助函数：生成临时文件路径（在 .temp 下） ----------
-std::wstring JdkDownloadService::tempDownloadPath(const std::wstring& ext) {
-    std::wstring tempDir = tempDirectory();
-    return JoinPath(tempDir, L"jmt_download." + ext);
+// ---------- 辅助函数：生成临时文件路径（在 .temp 下，按 URL 唯一化） ----------
+std::wstring JdkDownloadService::tempDownloadPath(const std::wstring& ext, const std::wstring& url) {
+    // 用 URL 的哈希做后缀，避免多个源/多个实例复写同一个文件
+    uint32_t hash = 2166136261u;
+    for (wchar_t ch : url) {
+        hash ^= static_cast<uint32_t>(ch);
+        hash *= 16777619u;
+    }
+    wchar_t suffix[16];
+    swprintf_s(suffix, L"%08x", hash);
+    return JoinPath(tempDirectory(), L"jmt_download_" + std::wstring(suffix) + L"." + ext);
 }
 
+// 统一的 User-Agent：镜像方可以据此识别 JMT（而不是无名的 curl）
+static const wchar_t* kJmtUserAgent = L"JMT/1.7 (Windows; +https://github.com/sczerofox/JMT)";
+
 // ---------- 辅助函数：使用 curl.exe 下载 ----------
-bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath) {
+bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std::wstring& destPath,
+                                              int& outStatus) {
+    outStatus = 0;
     std::wstring cleanUrl = url;
     cleanUrl.erase(std::remove_if(cleanUrl.begin(), cleanUrl.end(),
                                   [](wchar_t ch) { return ch <= 0x20; }), cleanUrl.end());
@@ -116,20 +128,65 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
         }
     }
 
-    std::wstring cmdLine = L"\"" + std::wstring(curlPath) + L"\" -L --retry 3 -o \"" + destPath + L"\" \"" + cleanUrl + L"\" --progress-bar";
+    // 镜像友好：静默进度（进度由我们自己画）、连接/总超时、标识 UA、重试降到 2 次
+    std::wstring cmdLine = L"\"" + std::wstring(curlPath) + L"\" -L -s -S --no-progress-meter"
+                           L" --retry 2 --connect-timeout 15 --max-time 900"
+                           L" -A \"" + kJmtUserAgent + L"\""
+                           L" -o \"" + destPath + L"\" \"" + cleanUrl + L"\""
+                           L" -w \"%{http_code}\"";
+
+    // 捕获子进程输出：既拿到 HTTP 状态码，也避免 curl 的进度/错误信息污染我们的输出流
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.bInheritHandle = TRUE;
+    HANDLE readEnd = nullptr;
+    HANDLE writeEnd = nullptr;
+    if (!CreatePipe(&readEnd, &writeEnd, &attributes, 4096)) {
+        return false;
+    }
+    SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOW si = { sizeof(STARTUPINFOW) };
-    PROCESS_INFORMATION pi;
-    if (!CreateProcessW(nullptr, (LPWSTR)cmdLine.c_str(), nullptr, nullptr, FALSE,
-                        0, nullptr, nullptr, &si, &pi)) {
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = writeEnd;
+    si.hStdError = writeEnd;
+    si.hStdInput = nullptr;
+
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, (LPWSTR)cmdLine.c_str(), nullptr, nullptr, TRUE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(readEnd);
+        CloseHandle(writeEnd);
         return false;
+    }
+    CloseHandle(writeEnd);
+
+    std::string captured;
+    char buffer[256];
+    DWORD read = 0;
+    while (ReadFile(readEnd, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+        captured.append(buffer, read);
     }
 
     WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode;
+    DWORD exitCode = 0;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+    CloseHandle(readEnd);
+
+    // 从输出里取最后一个 3 位数字作为 HTTP 状态码（-w "%{http_code}"）
+    for (size_t i = captured.size(); i >= 3; --i) {
+        const std::string tail = captured.substr(i - 3, 3);
+        if (std::all_of(tail.begin(), tail.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) {
+            outStatus = std::stoi(tail);
+            break;
+        }
+    }
+
+    if (!captured.empty()) {
+        out_.line(OutputLevel::Debug, L"curl 输出: " + ToWideString(captured));
+    }
 
     if (exitCode != 0) {
         DeleteFileW(destPath.c_str());
@@ -140,15 +197,18 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
 }
 
 // ---------- 辅助函数：多线程下载 ----------
-bool JdkDownloadService::downloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath) {
+bool JdkDownloadService::downloadFileWithMultiThread(const std::wstring& url, const std::wstring& destPath,
+                                                     int& outStatus) {
+    outStatus = 0;   // WinHTTP 路径不解析 HTTP 状态码，按传输层失败处理
     std::wstring cleanUrl = url;
     cleanUrl.erase(std::remove_if(cleanUrl.begin(), cleanUrl.end(),
                                   [](wchar_t ch) { return ch <= 0x20; }), cleanUrl.end());
 
     MultiThreadDownloader downloader;
-    downloader.setConnections(4);
+    // 并发上限跟节流策略保持一致（默认 2）：单主机不会出现 4~32 条并发连接
+    downloader.setConnections(throttle_.policy().maxConcurrentPerHost);
     downloader.setTimeout(60);
-    downloader.setRetryCount(3);
+    downloader.setRetryCount(2);
 
     bool success = false;
     std::wstring errorMsg;
@@ -199,12 +259,33 @@ bool JdkDownloadService::downloadFileWithMultiThread(const std::wstring& url, co
 }
 
 // ---------- 统一的下载入口 ----------
-bool JdkDownloadService::downloadFile(const std::wstring& url, const std::wstring& destPath) {
-    if (downloadFileWithCurl(url, destPath)) {
-        return true;
+bool JdkDownloadService::downloadFile(const std::wstring& url, const std::wstring& destPath,
+                                      int& outStatus) {
+    // 镜像友好：所有网络请求都必须先通过节流器（并发/间隔/预算/拉黑）
+    std::wstring denyReason;
+    if (!throttle_.acquire(url, denyReason)) {
+        out_.line(OutputLevel::Warning, L"跳过该源: " + denyReason);
+        outStatus = 0;
+        return false;
     }
-    out_.line(OutputLevel::Warning, L"curl 下载失败，尝试多线程下载...");
-    return downloadFileWithMultiThread(url, destPath);
+
+    bool success = downloadFileWithCurl(url, destPath, outStatus);
+    if (!success) {
+        // 限速/拒绝类信号（429/503/403）不再换引擎重试，避免叠加请求
+        if (outStatus == 429 || outStatus == 503 || outStatus == 403) {
+            throttle_.noteResult(url, outStatus, false);
+            throttle_.release(url);
+            out_.line(OutputLevel::Warning, L"该源返回 HTTP " + std::to_wstring(outStatus) +
+                                            L"（限速/拒绝），停止向该主机继续请求");
+            return false;
+        }
+        out_.line(OutputLevel::Warning, L"curl 下载失败，尝试多线程下载...");
+        success = downloadFileWithMultiThread(url, destPath, outStatus);
+    }
+
+    throttle_.noteResult(url, outStatus, success);
+    throttle_.release(url);
+    return success;
 }
 
 // ---------- 解压 ZIP ----------
@@ -711,6 +792,14 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
         const DownloadStep& step = plan.steps[i];
         const std::wstring order = L"（源 " + std::to_wstring(i + 1) + L"/" +
                                    std::to_wstring(plan.steps.size()) + L"）";
+
+        // 镜像友好：被临时拉黑的主机直接跳过，不再产生任何请求
+        if (!step.url.empty() && throttle_.isHostBlocked(HostThrottle::hostOf(step.url))) {
+            out_.line(OutputLevel::Warning, L"跳过源" + order + L"：主机 " +
+                                            HostThrottle::hostOf(step.url) + L" 因限速/拒绝访问被临时拉黑");
+            continue;
+        }
+
         switch (step.kind) {
             case DownloadStepKind::MirrorZip:
                 out_.line(OutputLevel::Info, L"尝试 ZIP 源" + order);
@@ -740,15 +829,29 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
     }
 
     out_.line(OutputLevel::Error, L"所有下载源均失败，版本 " + version + L" 未安装");
+    out_.line(OutputLevel::Info, L"本次共发出 " + std::to_wstring(throttle_.totalRequests()) +
+                                 L" 次请求（预算 " + std::to_wstring(throttle_.policy().maxRequestsTotal) +
+                                 L" 次）；已按镜像友好策略限速与退避");
+    const std::vector<std::wstring> blocked = throttle_.blockedHosts();
+    if (!blocked.empty()) {
+        std::wstring list;
+        for (const auto& host : blocked) {
+            if (!list.empty()) list += L", ";
+            list += host;
+        }
+        out_.line(OutputLevel::Warning, L"以下主机已被临时拉黑（稍后自动恢复）: " + list);
+    }
     return L"";
 }
 
 bool JdkDownloadService::tryZipSource(const std::wstring& url, const std::wstring& version,
                                       const std::wstring& targetDir) {
-    const std::wstring tempFile = tempDownloadPath(L"zip");
+    const std::wstring tempFile = tempDownloadPath(L"zip", url);
     out_.line(OutputLevel::Info, L"正在下载 JDK " + version + L"（ZIP）: " + url);
-    if (!downloadFile(url, tempFile)) {
-        out_.line(OutputLevel::Warning, L"该 ZIP 源下载失败，尝试下一个源...");
+    int httpStatus = 0;
+    if (!downloadFile(url, tempFile, httpStatus)) {
+        out_.line(OutputLevel::Warning, L"该 ZIP 源下载失败（HTTP " + std::to_wstring(httpStatus) +
+                                        L"），尝试下一个源...");
         return false;
     }
     if (!extractZip(tempFile, targetDir)) {
@@ -778,8 +881,10 @@ std::wstring JdkDownloadService::tryExeSource(const std::wstring& url, const std
     const std::wstring tempFile = JoinPath(tempDirectory(), fileName);
 
     out_.line(OutputLevel::Info, L"正在下载 EXE 安装程序: " + url);
-    if (!downloadFile(url, tempFile)) {
-        out_.line(OutputLevel::Warning, L"该 EXE 源下载失败，尝试下一个源...");
+    int httpStatus = 0;
+    if (!downloadFile(url, tempFile, httpStatus)) {
+        out_.line(OutputLevel::Warning, L"该 EXE 源下载失败（HTTP " + std::to_wstring(httpStatus) +
+                                        L"），尝试下一个源...");
         return L"";
     }
     out_.line(OutputLevel::Info, L"EXE 文件已保存到: " + tempFile);
@@ -798,12 +903,13 @@ bool JdkDownloadService::tryOfficialZip(const std::wstring& version, const std::
 
     std::wstring tempFile = JoinPath(tempDirectory(), fileName);
     if (tempFile.find(L".zip") == std::wstring::npos) {
-        tempFile = tempDownloadPath(L"zip");
+        tempFile = tempDownloadPath(L"zip", officialUrl);
     }
 
     out_.line(OutputLevel::Info, L"正在从官方源下载 JDK " + version + L" ...");
-    if (!downloadFile(officialUrl, tempFile)) {
-        out_.line(OutputLevel::Error, L"官方源下载失败");
+    int httpStatus = 0;
+    if (!downloadFile(officialUrl, tempFile, httpStatus)) {
+        out_.line(OutputLevel::Error, L"官方源下载失败（HTTP " + std::to_wstring(httpStatus) + L"）");
         DeleteFileW(tempFile.c_str());
         return false;
     }
