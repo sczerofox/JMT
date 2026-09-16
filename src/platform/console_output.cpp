@@ -11,6 +11,25 @@ HANDLE consoleHandle() {
     return GetStdHandle(STD_OUTPUT_HANDLE);
 }
 
+// 句柄是否指向真实控制台（管道/文件重定向时为 false）
+bool isConsoleHandle(HANDLE handle) {
+    DWORD mode = 0;
+    return handle != nullptr && handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode) != 0;
+}
+
+// 非控制台（重定向到文件/管道）时按 UTF-8 输出，便于脚本与测试读取
+void writeUtf8(HANDLE handle, const std::wstring& text) {
+    if (text.empty()) return;
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    if (bytes <= 0) return;
+    std::string buffer(static_cast<size_t>(bytes), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                        buffer.data(), bytes, nullptr, nullptr);
+    DWORD written = 0;
+    WriteFile(handle, buffer.data(), static_cast<DWORD>(buffer.size()), &written, nullptr);
+}
+
 struct TagAndAttributes {
     const wchar_t* tag;
     int attributes;
@@ -43,6 +62,11 @@ void ConsoleOutput::writeLine(const wchar_t* tag, const std::wstring& text, int 
     const std::wstring body = std::wstring(tag) + text;
     HANDLE handle = consoleHandle();
     DWORD written = 0;
+
+    if (!isConsoleHandle(handle)) {
+        writeUtf8(handle, body + L"\r\n");
+        return;
+    }
 
     if (useVT_) {
         std::wstring ansiPrefix;
@@ -77,6 +101,7 @@ void ConsoleOutput::line(OutputLevel level, const std::wstring& text) {
 
 void ConsoleOutput::progress(const std::wstring& text) {
     HANDLE handle = consoleHandle();
+    if (!isConsoleHandle(handle)) return;   // 重定向时进度行无意义
     CONSOLE_SCREEN_BUFFER_INFO info;
     GetConsoleScreenBufferInfo(handle, &info);
     const COORD position = {0, info.dwCursorPosition.Y};
@@ -88,6 +113,7 @@ void ConsoleOutput::progress(const std::wstring& text) {
 
 void ConsoleOutput::clearProgress() {
     HANDLE handle = consoleHandle();
+    if (!isConsoleHandle(handle)) return;
     CONSOLE_SCREEN_BUFFER_INFO info;
     GetConsoleScreenBufferInfo(handle, &info);
     const COORD position = {0, info.dwCursorPosition.Y};
