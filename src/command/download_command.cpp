@@ -59,12 +59,13 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     // 解析参数
     bool useMirror = false;
     bool forceOfficial = false;   // ← 新增标志
+    bool installerOnly = false;   // exe 参数：只下载 EXE 安装包，不自动安装
     std::wstring versionArg;
     for (size_t i = 1; i < scope.args.size(); ++i) {
         if (scope.args[i] == L"--mirror") {
             useMirror = true;
         } else if (scope.args[i] == L"exe") {
-            // 兼容旧参数：exe 当前与默认策略等价（见开发文档 10.4），此处仅做识别、跳过
+            installerOnly = true;
         } else if (scope.args[i] == L"java") {
             forceOfficial = true;
         } else {
@@ -173,7 +174,10 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     // ----- 执行下载 -----
     std::wstring installPath;
 
-    if (forceOfficial) {
+    if (installerOnly) {
+        // exe 参数优先：只下载 EXE 安装包到 .temp，不自动安装
+        installPath = ctx.download->downloadInstallerOnly(majorVersion);
+    } else if (forceOfficial) {
         // 强制从官方下载（绕过镜像和 EXE）
         installPath = ctx.download->downloadFromOfficial(majorVersion);
     } else if (useMirror) {
