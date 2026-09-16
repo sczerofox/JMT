@@ -23,7 +23,7 @@
 | `jmt env` | 注册 JMT 自身目录到 PATH | 是 |
 | `jmt remove <子命令>` | 删除 JDK / 清理环境 / 清空回收站 | 是 |
 | `jmt data <子命令>` | 导出 / 导入 JDK 列表 | `input` 需要 |
-| `jmt rollback <ver\|list>` | 从回收站恢复已删除的 JDK | 恢复需要，`list` 不需要 |
+| `jmt rollback [ver\|list]` | 从回收站恢复已删除的 JDK（不带参数即查看可回退版本） | 恢复需要，查看不需要 |
 | `jmt shell` | 打开已配置环境的新终端（旧窗口自动退出） | 否 |
 | `jmt version` | 显示版本信息 | 否 |
 | `jmt help [命令]` | 显示帮助或指定命令详情 | 否 |
@@ -178,11 +178,12 @@ jmt data input     # 从 .data\ver_out.txt 导入并安装 JDK
 - `output`：按 `版本号|安装路径` 逐行写入 `.data\ver_out.txt`（UTF-8 带 BOM）
 - `input`：逐行解析；目标路径已是合法 JDK 则跳过，否则询问是否下载，安装到该路径的父目录并复用 `downloadAndInstall`，最后强制刷新缓存并输出汇总统计
 
-### `jmt rollback <version>` / `jmt rollback list`
+### `jmt rollback [version|list]`
 
 ```cmd
-jmt rollback list     # 查看回收站中可恢复的版本及原始路径
-jmt rollback 21       # 恢复版本 21 到原始路径
+jmt rollback          # 查看回收站中可恢复的版本及原始路径（不带参数 = 下面的 list）
+jmt rollback list     # 同上，显式写法
+jmt rollback 17.0.9   # 恢复指定版本到原始路径
 ```
 
 - 在 `.trash\jdk-<版本>_*` 中按创建时间取最新条目
@@ -190,6 +191,7 @@ jmt rollback 21       # 恢复版本 21 到原始路径
 - 原路径已存在时拒绝覆盖；父目录不存在时自动递归创建
 - 优先 `MoveFileW`，失败则用提权 `xcopy /E /I /Y` 复制并删除回收站副本
 - 恢复成功后强制重扫并刷新缓存
+- 查看列表不需要管理员权限，且失败/为空时都会给出下一步提示
 
 ### `jmt shell`
 

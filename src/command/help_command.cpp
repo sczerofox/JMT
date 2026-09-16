@@ -29,6 +29,7 @@ static void PrintSubcommandDetail(IOutput& out, const std::wstring& cmd) {
         out.line(OutputLevel::Info, L"  参数：");
         out.line(OutputLevel::Info, L"    list              查看回收站中可恢复的版本");
         out.line(OutputLevel::Info, L"    <版本号>          恢复指定版本 JDK 到原始路径");
+        out.line(OutputLevel::Info, L"  说明：不带参数执行 'jmt rollback' 等价于 'jmt rollback list'");
     } else if (cmd == L"search") {
         out.line(OutputLevel::Info, L"");
         out.line(OutputLevel::Info, L"  可选参数：");
@@ -54,7 +55,7 @@ ExitCode HelpCommand::execute(const std::vector<std::wstring>& args, AppContext&
         ctx.out->line(OutputLevel::Info, L"  use <版本号>       切换当前版本");
         ctx.out->line(OutputLevel::Info, L"  download <版本号>  从镜像/官方源下载 JDK 并自动配置（exe 仅下载包）");
         ctx.out->line(OutputLevel::Info, L"  remove             删除 JDK（env/all/temp/trash/<版本号>）");
-        ctx.out->line(OutputLevel::Info, L"  rollback <版本号>  从回收站恢复 JDK");
+        ctx.out->line(OutputLevel::Info, L"  rollback <版本号>  从回收站恢复 JDK（list 查看可恢复版本）");
         ctx.out->line(OutputLevel::Info, L"");
         ctx.out->line(OutputLevel::Info, L"环境配置：");
         ctx.out->line(OutputLevel::Info, L"  env                注册 JMT 目录到系统 PATH");

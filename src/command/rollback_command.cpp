@@ -40,17 +40,14 @@ static bool PathExists(const std::wstring& path) {
 
 ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     // ----- 0. 参数检查 -----
-    if (args.size() < 2) {
-        ctx.out->line(OutputLevel::Error, L"用法: rollback <version> 或 rollback list");
-        ctx.out->line(OutputLevel::Info, L"  list  - 显示回收站中所有可回退的版本");
-        return ExitCode::BadArgs;
-    }
-
     // ----- 1. list 子命令（无需提权）-----
-    if (args[1] == L"list") {
+    // 不带参数时等价于 list：直接显示可回退版本，避免用户不知道有 list 子命令
+    const bool listEquivalent = (args.size() < 2);
+    if (listEquivalent || args[1] == L"list") {
         std::wstring trashRoot = ctx.paths.trashDir;
         if (!IsDirectory(trashRoot)) {
             ctx.out->line(OutputLevel::Info, L"回收站为空，没有可回退的版本");
+            ctx.out->line(OutputLevel::Info, L"被 'jmt remove <版本号>' 删除的 JDK 会先进入回收站，可在此恢复");
             return ExitCode::Ok;
         }
 
@@ -59,17 +56,22 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
         HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &fd);
         if (hFind == INVALID_HANDLE_VALUE) {
             ctx.out->line(OutputLevel::Info, L"回收站为空，没有可回退的版本");
+            ctx.out->line(OutputLevel::Info, L"被 'jmt remove <版本号>' 删除的 JDK 会先进入回收站，可在此恢复");
             return ExitCode::Ok;
         }
 
         std::vector<std::pair<std::wstring, std::wstring>> entries;
+        size_t trashItemCount = 0;
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                 std::wstring dirName = fd.cFileName;
-                std::wregex pattern(L"jdk-(\\d+)_");
+                // 目录名形如 jdk-<版本>_<yyyyMMdd>_<HHmmss>；版本可能含点或下划线
+                // （17.0.9 / 1.8.0_202 / 8u202），因此按后缀时间戳锚定解析
+                std::wregex pattern(L"^jdk-(.+)_\\d{8}_\\d{6}$");
                 std::wsmatch match;
                 if (std::regex_search(dirName, match, pattern) && match.size() > 1) {
                     std::wstring version = match[1].str();
+                    ++trashItemCount;
                     std::wstring fullPath = JoinPath(trashRoot, dirName);
                     std::wstring metaPath = JoinPath(fullPath, L".original_path");
                     std::wstring originalPath = ReadFileText(metaPath);
@@ -83,7 +85,13 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
         FindClose(hFind);
 
         if (entries.empty()) {
-            ctx.out->line(OutputLevel::Info, L"回收站中没有有效的 JDK 备份（元数据可能丢失）");
+            if (trashItemCount > 0) {
+                ctx.out->line(OutputLevel::Warning, L"回收站中有 " + std::to_wstring(trashItemCount) +
+                                                      L" 个备份目录，但缺少 .original_path 元数据，无法确定原始路径");
+                ctx.out->line(OutputLevel::Info, L"这些目录可以直接从 " + trashRoot + L" 手动复制回去");
+            } else {
+                ctx.out->line(OutputLevel::Info, L"回收站为空，没有可回退的版本");
+            }
             return ExitCode::Ok;
         }
 
@@ -92,7 +100,8 @@ ExitCode RollbackCommand::execute(const std::vector<std::wstring>& args, AppCont
             ctx.out->line(OutputLevel::Info, L"  JDK " + ver + L"  -> 原始路径: " + path);
         }
         ctx.out->line(OutputLevel::Success, L"共 " + std::to_wstring(entries.size()) + L" 个版本可回退");
-        ctx.out->line(OutputLevel::Info, L"使用 'rollback <版本号>' 恢复指定版本");
+        ctx.out->line(OutputLevel::Info, L"用法: jmt rollback <版本号>   恢复指定版本（如 jmt rollback " + entries.front().first + L"）");
+        ctx.out->line(OutputLevel::Info, L"      jmt rollback list      查看本列表（不带参数执行 jmt rollback 效果相同）");
         return ExitCode::Ok;
     }
 

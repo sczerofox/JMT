@@ -285,7 +285,7 @@ class IElevator {                                           // platform/elevator
 
 ### 3.8 rollback — 回收站回退
 
-- `rollback list`：列 `.trash\jdk-*` 目录，用 `jdk-(\d+)_` 提取版本，读取 `.original_path`（经 `CleanPath` 去控制字符与尾分隔符）后输出；不需要提权
+- `rollback`（不带参数）与 `rollback list` 等价：列 `.trash\jdk-*` 目录，用 `^jdk-(.+)_\d{8}_\d{6}$` 提取版本（版本可含点/下划线，如 `17.0.9`、`1.8.0_202`），读取 `.original_path`（经 `CleanPath` 去控制字符与尾分隔符）后输出；不需要提权。列表末尾会打印恢复用法
 - `rollback <版本>`：提权后按 `jdk-<版本>_*` 匹配、以 `ftCreationTime` 取最新条目；`.original_path` 缺失返回 `4`；原路径已存在返回 `2`；父目录用递归辅助函数创建，失败返回 `3`
 - 恢复：`MoveFileW` 优先；失败则 `ShellExecuteExW(runas)` 执行 `xcopy /E /I /Y` 并等待退出码，成功后删除回收站副本
 - 最后删除 `.original_path`、强制重扫刷新缓存

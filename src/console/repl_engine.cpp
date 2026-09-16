@@ -86,6 +86,7 @@ void ReplEngine::printBanner() {
     ctx_.out->line(OutputLevel::Info, L"  download <version>  Download JDK from mirror/official and auto-setup (exe: download only)");
     ctx_.out->line(OutputLevel::Info, L"  remove              Remove JDK or clean env (env/all/temp/trash/<version>)");
     ctx_.out->line(OutputLevel::Info, L"  rollback <version>  Restore a deleted JDK from trash");
+    ctx_.out->line(OutputLevel::Info, L"  rollback list       List restorable JDKs (same as running 'rollback' alone)");
     ctx_.out->line(OutputLevel::Info, L"");
     ctx_.out->line(OutputLevel::Info, L"Environment:");
     ctx_.out->line(OutputLevel::Info, L"  env                 Register JMT directory in PATH");
