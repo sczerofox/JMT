@@ -33,6 +33,7 @@ set(JMT_CORE_SOURCES
         src/system/elevation_helper.cpp
         src/system/utils.cpp
         src/common/string_helper.cpp
+        src/platform/console_output.cpp
         src/console/color_print.cpp
         src/console/console_progress.cpp
         src/console/repl_engine.cpp
