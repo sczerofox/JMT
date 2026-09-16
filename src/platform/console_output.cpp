@@ -121,3 +121,8 @@ void ConsoleOutput::clearProgress() {
     FillConsoleOutputCharacterW(handle, L' ', info.dwSize.X, position, &written);
     SetConsoleCursorPosition(handle, position);
 }
+
+bool ConsoleOutput::supportsProgress() const {
+    // stdout 被重定向（文件/管道）时无法原地刷新，此时调用方应改用普通行
+    return isConsoleHandle(GetStdHandle(STD_OUTPUT_HANDLE));
+}

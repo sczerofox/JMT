@@ -12,6 +12,8 @@ public:
     virtual void line(OutputLevel level, const std::wstring& text) = 0;
     virtual void progress(const std::wstring& text) = 0;
     virtual void clearProgress() = 0;
+    // 是否支持「原地刷新」的进度行（真实控制台为 true；重定向/管道为 false）
+    [[nodiscard]] virtual bool supportsProgress() const = 0;
 };
 
 // 控制台实现：ANSI 上色 + WriteConsoleW，行为与重构前的 color_print 完全一致。
@@ -23,6 +25,7 @@ public:
     void line(OutputLevel level, const std::wstring& text) override;
     void progress(const std::wstring& text) override;
     void clearProgress() override;
+    [[nodiscard]] bool supportsProgress() const override;
 
 private:
     void writeLine(const wchar_t* tag, const std::wstring& text, int attributes);
@@ -37,4 +40,5 @@ public:
     void line(OutputLevel, const std::wstring&) override {}
     void progress(const std::wstring&) override {}
     void clearProgress() override {}
+    [[nodiscard]] bool supportsProgress() const override { return false; }
 };

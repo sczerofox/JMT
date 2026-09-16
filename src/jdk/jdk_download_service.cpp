@@ -207,8 +207,8 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
         const std::wstring downloadedText = ToWideString(curl_output::formatBytes(downloadedBytes));
 
         if (percent >= 0) {
-            // 服务端给了总长度：控制台上原地刷新；另外每跨过 25% 或每 10 秒补一行普通输出
-            // （这样控制台有实时刷新，日志/重定向也有可读的进度轨迹）
+            // 服务端给了总长度：控制台上原地刷新即可；只有输出不支持原地刷新（重定向/管道）时，
+            // 才每跨过 25% 或每 10 秒补一行普通输出，避免控制台上出现重复的两行
             if (percent != lastPercent) {
                 lastPercent = percent;
                 if (percent > maxPercent) maxPercent = percent;
@@ -217,7 +217,7 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
             }
             const int milestone = curl_output::milestoneCrossed(lastMilestone, percent);
             const bool periodic = (elapsedSec >= nextHeartbeatSec);
-            if (milestone > 0 || periodic) {
+            if (!out_.supportsProgress() && (milestone > 0 || periodic)) {
                 if (milestone > 0) {
                     lastMilestone = milestone;
                 }
@@ -232,8 +232,13 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
             // 拿不到百分比（连接中/服务端不报总长）：每 5 秒一行，避免看起来像卡住
             nextHeartbeatSec = elapsedSec + 5;
             const std::wstring phase = (downloadedBytes > 0) ? L"正在下载..." : L"正在连接...";
-            out_.line(OutputLevel::Info, phase + L" 已用时 " + std::to_wstring(elapsedSec) +
-                                         L" 秒    已下载 " + downloadedText);
+            if (out_.supportsProgress()) {
+                out_.progress(phase + L" 已用时 " + std::to_wstring(elapsedSec) +
+                              L" 秒    已下载 " + downloadedText);
+            } else {
+                out_.line(OutputLevel::Info, phase + L" 已用时 " + std::to_wstring(elapsedSec) +
+                                             L" 秒    已下载 " + downloadedText);
+            }
         }
     }
 
