@@ -23,6 +23,30 @@
 
 
 
+// 未处理的结构化异常（访问违规等）默认会让进程静默退出，这里统一打印诊断信息。
+// 只用最底层的 WriteConsoleW/WriteFile，避免在异常路径里再触发复杂逻辑。
+static LONG WINAPI JmtUnhandledExceptionFilter(EXCEPTION_POINTERS* info) {
+    const DWORD code = (info != nullptr && info->ExceptionRecord != nullptr)
+                               ? info->ExceptionRecord->ExceptionCode
+                               : 0;
+    wchar_t message[256];
+    swprintf_s(message, L"[ERROR] 程序异常终止（异常代码 0x%08X），请把上面的输出反馈给开发者\r\n", code);
+
+    HANDLE handle = GetStdHandle(STD_ERROR_HANDLE);
+    DWORD written = 0;
+    DWORD mode = 0;
+    if (handle != nullptr && handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode)) {
+        WriteConsoleW(handle, message, static_cast<DWORD>(wcslen(message)), &written, nullptr);
+    } else if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+        char utf8[512] = {0};
+        const int size = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8, sizeof(utf8) - 1, nullptr, nullptr);
+        if (size > 0) {
+            WriteFile(handle, utf8, static_cast<DWORD>(size - 1), &written, nullptr);
+        }
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 // 单次命令模式下的 Ctrl+C：置位取消开关，让下载/扫描尽快退出
 static BOOL WINAPI JmtCtrlHandler(DWORD ctrlType) {
     if (ctrlType == CTRL_C_EVENT) {
@@ -32,6 +56,10 @@ static BOOL WINAPI JmtCtrlHandler(DWORD ctrlType) {
     return FALSE;
 }
 int wmain(int argc, wchar_t* argv[]) {
+    // 注册 Ctrl+C 处理与未处理异常诊断：下载/扫描时可以被打断，异常退出也能看到原因
+    SetConsoleCtrlHandler(JmtCtrlHandler, TRUE);
+    SetUnhandledExceptionFilter(JmtUnhandledExceptionFilter);
+
     // 组合根：装配 Win32 适配器与服务实例
     AppRuntime runtime(AppPaths::fromExecutable(), argc == 1);
     AppContext& ctx = runtime.context();
