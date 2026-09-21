@@ -35,6 +35,17 @@ struct DownloadPlan {
 // URL 是否为 demo 包（仅含示例代码，不能作为 JDK 使用）
 bool isDemoUrl(const std::wstring& url);
 
+// 源的友好名称：优先按主机名映射（华为云 / 南京大学 / 清华 TUNA / …），
+// 未知主机退化为主机名本身；官方源与本地文件另有专门名称。
+std::wstring sourceDisplayName(const std::wstring& url);
+
+// 官方源（Adoptium API，运行时解析真实下载地址）的展示名
+inline const wchar_t* kOfficialSourceName = L"Adoptium 官方源";
+
+// 源分组键：同一主机算同一个源（这样「华为云镜像」的多条链接会归到一条里）；
+// 官方源（url 为空）单独一组。
+std::wstring sourceKey(const std::wstring& url);
+
 // 按请求的版本过滤下载源：
 //   主版本请求（17）→ 返回全部候选；
 //   完整版本请求（17.0.2 / 8u202）→ 只保留 URL 里包含该版本串的源（可能为空）。

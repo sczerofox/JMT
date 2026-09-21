@@ -819,6 +819,7 @@ build/jmt_tests.exe --suite path_utils
 | download/4 | `network/curl_output`：解析 curl 的 `--progress-bar` 百分比与 `-w` 收尾统计（状态码/字节/用时/速度）+ 里程碑计算。`downloadFileWithCurl` 改为边等边读管道：百分比走 `IOutput::progress` 原地刷新，25/50/75/100% 额外打印普通行（重定向可见），无百分比时每 5 秒心跳；成功后打印「下载完成: X MB，平均 Y MB/s」 |
 | download/6 | 进度显示修正：① 去掉 curl 的 `-s`（silent 会把进度条一起关掉，导致 211MB 下载全程只显示「正在连接/下载」）；② 修复重复打印（同一心跳既走 `progress` 又走 `line`，且前者无换行造成粘连），现在每次只输出一条；③ 进度行统一带「已下载 X MB + 已用时 N 秒」，有百分比时每 10 秒或每 25% 打一行普通输出，无百分比时每 5 秒一行；④ 新增 `downloadedSizeOf()` 直接读取目标文件大小作为「已下载」来源；⑤ `parseStatsFromTail()` 从输出最后一行读 `-w` 统计（此前从头读会读到进度条里的数字，导致「下载完成: 0 KB」）；⑥ 修复 `ExtractVersionFromUrl` 把 URL 里的 IP（`http://127.0.0.1/...`）当成版本号的 bug，改为先匹配 `jdk/openjdk` 后的版本串、再回退到 `/17/` 这种独立路径段 |
 | download/7 | 进度显示去重：`IOutput` 新增 `supportsProgress()`（真实控制台 true / 重定向 false），服务层据此二选一——控制台只走原地刷新行，重定向才补 `[INFO]` 进度行，避免控制台上出现「刷新行 + INFO 行」粘在同一行的重复输出 |
+| download/8 | 交互式选源与打印优化：`download_plan` 新增 `sourceDisplayName()`（主机名 → 华为云/南京大学/清华 TUNA/中科大/阿里云/Adoptium 官方/本地文件，未知主机回退主机名）与 `sourceKey()`（按主机分组，官方源单列）；`JdkDownloadService` 新增 `listSources(version, mode, installerOnly)` 与 `preferredSource` 参数（`executePlan` 把所选源排到最前，其余仍作后备）；`download` 命令打印「目标版本 / 查找到可用源 N（候选链接 M 条）/ 编号列表 / 提示选择」，支持 `--source N`、回车默认第 1 个、非交互环境自动按顺序 |
 
 **尚未完成**（原阶段 3 计划的其余部分，留待下一批）：
 

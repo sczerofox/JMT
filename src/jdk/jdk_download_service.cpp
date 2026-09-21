@@ -754,19 +754,21 @@ bool JdkDownloadService::officialDownloadInfo(const std::wstring& version, std::
 // ============================================================
 
 std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version,
-                                                    const std::wstring& installRoot) {
+                                                    const std::wstring& installRoot,
+                                                    int preferredSource) {
     return executePlan(DownloadPlan::build(DownloadMode::Default, false,
                                            filterUrlsForVersion(zipUrlsFor(version), version),
                                            filterUrlsForVersion(exeUrlsFor(version), version)),
-                       version, installRoot);
+                       version, installRoot, preferredSource);
 }
 
 std::wstring JdkDownloadService::downloadFromMirror(const std::wstring& version,
-                                                    const std::wstring& installRoot) {
+                                                    const std::wstring& installRoot,
+                                                    int preferredSource) {
     return executePlan(DownloadPlan::build(DownloadMode::MirrorOnly, false,
                                            filterUrlsForVersion(zipUrlsFor(version), version),
                                            filterUrlsForVersion(exeUrlsFor(version), version)),
-                       version, installRoot);
+                       version, installRoot, preferredSource);
 }
 
 void JdkDownloadService::ensureExternalMappingFiles() {
@@ -850,24 +852,69 @@ void JdkDownloadService::ensureExternalMappingFiles() {
 }
 
 std::wstring JdkDownloadService::downloadFromOfficial(const std::wstring& version,
-                                                      const std::wstring& installRoot) {
+                                                      const std::wstring& installRoot,
+                                                      int preferredSource) {
     return executePlan(DownloadPlan::build(DownloadMode::OfficialOnly, false, {}, {}),
-                       version, installRoot);
+                       version, installRoot, preferredSource);
 }
 
-std::wstring JdkDownloadService::downloadInstallerOnly(const std::wstring& version) {
+std::wstring JdkDownloadService::downloadInstallerOnly(const std::wstring& version, int preferredSource) {
     return executePlan(DownloadPlan::build(DownloadMode::Default, true, {},
                                            filterUrlsForVersion(exeUrlsFor(version), version)),
-                       version, L"");
+                       version, L"", preferredSource);
 }
 
 // ============================================================
 // ========== 计划执行 =========================================
 // ============================================================
 
+// 给每个步骤算出它属于第几个源（按首次出现的顺序编号，1 起）
+static std::vector<int> stepSourceIndexes(const std::vector<DownloadStep>& steps) {
+    std::vector<int> indexes;
+    std::map<std::wstring, int> seen;
+    for (const auto& step : steps) {
+        const std::wstring key = sourceKey(step.url);
+        const auto it = seen.find(key);
+        if (it == seen.end()) {
+            const int index = static_cast<int>(seen.size()) + 1;
+            seen[key] = index;
+            indexes.push_back(index);
+        } else {
+            indexes.push_back(it->second);
+        }
+    }
+    return indexes;
+}
+
+std::vector<JdkDownloadService::SourceOption> JdkDownloadService::listSources(const std::wstring& version,
+                                                                              DownloadMode mode,
+                                                                              bool installerOnly) {
+    const DownloadPlan plan = DownloadPlan::build(
+            mode, installerOnly,
+            filterUrlsForVersion(zipUrlsFor(version), version),
+            filterUrlsForVersion(exeUrlsFor(version), version));
+
+    std::vector<SourceOption> sources;
+    const std::vector<int> indexes = stepSourceIndexes(plan.steps);
+    for (size_t i = 0; i < plan.steps.size(); ++i) {
+        const int index = indexes[i];
+        if (index > static_cast<int>(sources.size())) {
+            SourceOption option;
+            option.index = index;
+            option.url = plan.steps[i].url;
+            option.official = plan.steps[i].url.empty();
+            option.name = sourceDisplayName(plan.steps[i].url);
+            sources.push_back(option);
+        }
+        sources[static_cast<size_t>(index) - 1].candidateCount++;
+    }
+    return sources;
+}
+
 std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
                                              const std::wstring& version,
-                                             const std::wstring& installRoot) {
+                                             const std::wstring& installRoot,
+                                             int preferredSource) {
     const std::wstring root = installRoot.empty() ? GetInstallRoot() : installRoot;
     const std::wstring targetDir = JoinPath(root, L"jdk-" + version);
 
@@ -876,12 +923,26 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
         return targetDir;
     }
 
+    // 交互式选源：把用户选中的源排到最前（其余源仍作为后备，避免所选源临时不可用就整体失败）
+    std::vector<DownloadStep> steps = plan.steps;
+    if (preferredSource > 0) {
+        std::vector<DownloadStep> preferred;
+        std::vector<DownloadStep> others;
+        const std::vector<int> indexes = stepSourceIndexes(steps);
+        for (size_t i = 0; i < steps.size(); ++i) {
+            (indexes[i] == preferredSource ? preferred : others).push_back(steps[i]);
+        }
+        steps.clear();
+        steps.insert(steps.end(), preferred.begin(), preferred.end());
+        steps.insert(steps.end(), others.begin(), others.end());
+    }
+
     // demo 包直接跳过（此前只提示但仍然下载）
     for (const auto& demoUrl : plan.skippedDemoUrls) {
         out_.line(OutputLevel::Warning, L"已跳过 DEMO 包（仅含示例代码）: " + demoUrl);
     }
 
-    if (plan.steps.empty()) {
+    if (steps.empty()) {
         out_.line(OutputLevel::Error,
                   plan.installerOnly
                           ? L"版本 " + version + L" 没有可下载的 EXE 安装包"
@@ -889,14 +950,14 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
         return L"";
     }
 
-    for (size_t i = 0; i < plan.steps.size(); ++i) {
+    for (size_t i = 0; i < steps.size(); ++i) {
         if (globalCancelState().cancelled()) {
             out_.line(OutputLevel::Warning, L"下载已取消，停止尝试其余源");
             return L"";
         }
-        const DownloadStep& step = plan.steps[i];
+        const DownloadStep& step = steps[i];
         const std::wstring order = L"（源 " + std::to_wstring(i + 1) + L"/" +
-                                   std::to_wstring(plan.steps.size()) + L"）";
+                                   std::to_wstring(steps.size()) + L"）";
 
         // 镜像友好：被临时拉黑的主机直接跳过，不再产生任何请求
         if (!step.url.empty() && throttle_.isHostBlocked(HostThrottle::hostOf(step.url))) {
@@ -905,9 +966,15 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
             continue;
         }
 
+        // 打印本次尝试的源名与下载链接（官方源的链接在运行时解析）
+        const std::wstring sourceName = sourceDisplayName(step.url);
+        out_.line(OutputLevel::Info, L"尝试源" + order + L"：" + sourceName);
+        if (!step.url.empty()) {
+            out_.line(OutputLevel::Info, L"下载链接：" + step.url);
+        }
+
         switch (step.kind) {
             case DownloadStepKind::MirrorZip:
-                out_.line(OutputLevel::Info, L"尝试 ZIP 源" + order);
                 if (tryZipSource(step.url, version, targetDir)) {
                     if (versionSatisfied(targetDir, version)) {
                         return targetDir;
@@ -915,7 +982,6 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
                 }
                 break;
             case DownloadStepKind::MirrorExe: {
-                out_.line(OutputLevel::Info, L"尝试 EXE 源" + order);
                 const std::wstring exeResult = tryExeSource(step.url, version, targetDir);
                 if (exeResult == L"EXE_DOWNLOADED") {
                     return exeResult;
@@ -923,7 +989,6 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
                 break;
             }
             case DownloadStepKind::OfficialZip:
-                out_.line(OutputLevel::Info, L"尝试官方源" + order);
                 if (tryOfficialZip(version, targetDir)) {
                     if (versionSatisfied(targetDir, version)) {
                         return targetDir;

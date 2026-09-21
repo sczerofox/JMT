@@ -1,6 +1,7 @@
 #include "jdk/download_plan.hpp"
 
 #include "common/java_version.hpp"
+#include "network/host_throttle.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -24,6 +25,51 @@ std::vector<std::wstring> filterUrlsForVersion(const std::vector<std::wstring>& 
         }
     }
     return matched;
+}
+
+std::wstring sourceDisplayName(const std::wstring& url) {
+    if (url.empty()) {
+        return kOfficialSourceName;
+    }
+
+    std::wstring lower = url;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](wchar_t ch) { return static_cast<wchar_t>(::towlower(ch)); });
+
+    struct HostName {
+        const wchar_t* host;
+        const wchar_t* name;
+    };
+    static const HostName kKnownHosts[] = {
+            {L"mirrors.huaweicloud.com", L"华为云镜像"},
+            {L"repo.huaweicloud.com", L"华为云镜像（Oracle 旧版）"},
+            {L"mirrors.nju.edu.cn", L"南京大学镜像"},
+            {L"mirrors.tuna.tsinghua.edu.cn", L"清华 TUNA 镜像"},
+            {L"mirrors.ustc.edu.cn", L"中科大镜像"},
+            {L"mirrors.aliyun.com", L"阿里云镜像"},
+            {L"mirrors.bfsu.edu.cn", L"北外镜像"},
+            {L"api.adoptium.net", L"Adoptium 官方源"},
+            {L"github.com", L"GitHub Releases"},
+            {L"objects.githubusercontent.com", L"GitHub Releases"},
+    };
+    for (const auto& entry : kKnownHosts) {
+        if (lower.find(entry.host) != std::wstring::npos) {
+            return entry.name;
+        }
+    }
+
+    if (lower.rfind(L"file://", 0) == 0) {
+        return L"本地文件";
+    }
+    const std::wstring host = HostThrottle::hostOf(url);
+    return host.empty() ? L"未知来源" : host;
+}
+
+std::wstring sourceKey(const std::wstring& url) {
+    if (url.empty()) {
+        return L"official";
+    }
+    return HostThrottle::hostOf(url);
 }
 
 DownloadPlan DownloadPlan::build(DownloadMode mode,

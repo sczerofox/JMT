@@ -11,17 +11,34 @@
 
 class JdkDownloadService {
 public:
+    // 一个可选的下载源（用于交互式选源）
+    struct SourceOption {
+        int index = 0;              // 1 起编号
+        std::wstring name;          // 友好名称
+        std::wstring url;           // 官方源为空（运行时解析）
+        bool official = false;
+        int candidateCount = 0;     // 该源包含的候选链接数
+    };
+
     JdkDownloadService(const AppPaths& paths, IOutput& out, HostThrottle& throttle)
             : paths_(paths), out_(out), throttle_(throttle) {}
 
     // 默认策略：镜像 ZIP → 镜像 EXE → 官方 ZIP；返回安装目录 / L"EXE_DOWNLOADED" / 空串
-    std::wstring downloadAndInstall(const std::wstring& version, const std::wstring& installRoot = L"");
+    std::wstring downloadAndInstall(const std::wstring& version, const std::wstring& installRoot = L"",
+                                    int preferredSource = 0);
     // 仅镜像源：ZIP → EXE
-    std::wstring downloadFromMirror(const std::wstring& version, const std::wstring& installRoot = L"");
+    std::wstring downloadFromMirror(const std::wstring& version, const std::wstring& installRoot = L"",
+                                    int preferredSource = 0);
     // 仅官方 Adoptium 源
-    std::wstring downloadFromOfficial(const std::wstring& version, const std::wstring& installRoot = L"");
+    std::wstring downloadFromOfficial(const std::wstring& version, const std::wstring& installRoot = L"",
+                                      int preferredSource = 0);
     // exe 参数：只下载 EXE 安装包到 .temp，不自动安装
-    std::wstring downloadInstallerOnly(const std::wstring& version);
+    std::wstring downloadInstallerOnly(const std::wstring& version, int preferredSource = 0);
+
+    // 列出该版本可用的下载源（供命令层展示与选择）
+    std::vector<SourceOption> listSources(const std::wstring& version,
+                                          DownloadMode mode,
+                                          bool installerOnly);
 
     // 重新加载内置 + 外部映射（启动时调用一次）
     void reloadMappings();
@@ -61,7 +78,8 @@ private:
     // 计划执行：按 DownloadPlan 逐步尝试，成功即返回
     std::wstring executePlan(const DownloadPlan& plan,
                              const std::wstring& version,
-                             const std::wstring& installRoot);
+                             const std::wstring& installRoot,
+                             int preferredSource);
     bool tryZipSource(const std::wstring& url, const std::wstring& version, const std::wstring& targetDir);
     std::wstring tryExeSource(const std::wstring& url, const std::wstring& version, const std::wstring& targetDir);
     bool tryOfficialZip(const std::wstring& version, const std::wstring& targetDir);
