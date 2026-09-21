@@ -26,7 +26,6 @@ set(JMT_CORE_SOURCES
         src/app/app_paths.cpp
         src/app/elevation_gate.cpp
         src/app/app_runtime.cpp
-        src/app/env_scope.cpp
         src/jdk/jdk_scan_service.cpp
         src/jdk/download_plan.cpp
         src/jdk/version_match.cpp

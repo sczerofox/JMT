@@ -15,10 +15,6 @@ public:
     // 命令自身不再拼提权命令行。
     [[nodiscard]] virtual bool requiresElevation() const { return false; }
 
-    // 是否支持 --user（仅改当前用户的环境变量）。支持时，命令行带 --user
-    // 可以免提权执行（见 ElevationGate::ensure）。
-    [[nodiscard]] virtual bool allowsUserScope() const { return false; }
-
     // 提权之前的只读校验：参数合法性、目标是否存在等。
     // 默认什么都不做；返回非 Ok 时调用方直接结束（不会再弹 UAC）。
     virtual ExitCode preflight([[maybe_unused]] const std::vector<std::wstring>& args,

@@ -19,7 +19,6 @@ class ElevationGate {
 public:
     // 元数据驱动：命令声明 requiresElevation() 后由调用方（main / REPL）统一调用
     [[nodiscard]] static ElevationDecision ensure(bool requiresElevation,
-                                                  bool allowsUserScope,
                                                   const std::vector<std::wstring>& args,
                                                   AppContext& ctx);
 
@@ -29,7 +28,4 @@ public:
 
     // 与旧实现逐字一致：参数含空格时加引号，用空格连接；args[0] 即命令名
     [[nodiscard]] static std::wstring buildCommandLine(const std::vector<std::wstring>& args);
-
-    // 命令行里是否出现某个开关（精确匹配）
-    [[nodiscard]] static bool hasFlag(const std::vector<std::wstring>& args, const std::wstring& flag);
 };

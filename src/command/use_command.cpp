@@ -3,16 +3,16 @@
 #include "jdk/java_env_service.hpp"
 #include "platform/output.hpp"
 #include "app/elevation_gate.hpp"
-#include "app/env_scope.hpp"
+
 #include "jdk/version_match.hpp"
 
 // 提权前先确认版本存在（避免版本打错也弹 UAC）
 ExitCode UseCommand::preflight(const std::vector<std::wstring>& args, AppContext& ctx) {
-    const EnvScope scope = EnvScope::parse(args);
+    
 
     bool exactOnly = false;
     std::vector<std::wstring> positional;
-    for (const auto& arg : scope.args) {
+    for (const auto& arg : args) {
         if (arg == L"--exact") {
             exactOnly = true;
         } else {
@@ -35,12 +35,12 @@ ExitCode UseCommand::preflight(const std::vector<std::wstring>& args, AppContext
 }
 
 ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
-    const EnvScope scope = EnvScope::parse(args);
+    
 
     // --exact：只接受完整版本（例如 17.0.2），不做主版本/前缀匹配
     bool exactOnly = false;
     std::vector<std::wstring> positional;
-    for (const auto& arg : scope.args) {
+    for (const auto& arg : args) {
         if (arg == L"--exact") {
             exactOnly = true;
         } else {
@@ -49,7 +49,7 @@ ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& 
     }
 
     if (positional.size() < 2) {
-        ctx.out->line(OutputLevel::Error, L"缺少版本号，用法: use <version> [--exact] [--user|--sys]");
+        ctx.out->line(OutputLevel::Error, L"缺少版本号，用法: use <version> [--exact]");
         return ExitCode::BadArgs;
     }
     const std::wstring& query = positional[1];
@@ -69,7 +69,7 @@ ExitCode UseCommand::execute(const std::vector<std::wstring>& args, AppContext& 
         }
     }
 
-    if (!ctx.env->setCurrentJdk(match.path, scope.target)) {
+    if (!ctx.env->setCurrentJdk(match.path, EnvTarget::Auto)) {
         ctx.out->line(OutputLevel::Error, L"切换失败，请确保有管理员权限");
         return ExitCode::PermissionDenied;
     }

@@ -4,14 +4,14 @@
 #include "platform/output.hpp"
 #include "common/string_helper.hpp"
 #include "app/elevation_gate.hpp"
-#include "app/env_scope.hpp"
+
 #include "jdk/version_match.hpp"
 
 ExitCode SearchCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
-    const EnvScope scope = EnvScope::parse(args);
+    
 
     bool force = false;
-    if (scope.args.size() > 1 && StringHelper::equalsIgnoreCase(scope.args[1], L"--force"))
+    if (args.size() > 1 && StringHelper::equalsIgnoreCase(args[1], L"--force"))
         force = true;
 
     auto jdks = ctx.scan->scanJdks(force);
@@ -40,7 +40,7 @@ ExitCode SearchCommand::execute(const std::vector<std::wstring>& args, AppContex
     }
 
     // 切换 PATH 到最大版本
-    if (!ctx.env->setCurrentJdk(maxPath, scope.target)) {
+    if (!ctx.env->setCurrentJdk(maxPath, EnvTarget::Auto)) {
         ctx.out->line(OutputLevel::Error, L"设置当前 JDK 到 PATH 失败，请检查权限");
         return ExitCode::PermissionDenied;
     }

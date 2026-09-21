@@ -55,7 +55,7 @@ void ReplEngine::run() {
 
         // 提权：与单次命令模式共用同一套元数据驱动逻辑
         const ElevationDecision decision =
-                ElevationGate::ensure(command->requiresElevation(), command->allowsUserScope(), tokens, ctx_);
+                ElevationGate::ensure(command->requiresElevation(), tokens, ctx_);
         if (!decision.proceed) {
             if (decision.code != ExitCode::Ok) {
                 ctx_.out->line(OutputLevel::Debug, L"命令返回码: " + std::to_wstring(toInt(decision.code)));
@@ -82,15 +82,15 @@ void ReplEngine::printBanner() {
     ctx_.out->line(OutputLevel::Info, L"Usage:");
     ctx_.out->line(OutputLevel::Info, L"");
     ctx_.out->line(OutputLevel::Info, L"JDK Management:");
-    ctx_.out->line(OutputLevel::Info, L"  search              Scan and auto-setup JDK (--force/--user/--sys)");
+    ctx_.out->line(OutputLevel::Info, L"  search              Scan and auto-setup JDK (--force)");
     ctx_.out->line(OutputLevel::Info, L"  list                List installed Java versions");
-    ctx_.out->line(OutputLevel::Info, L"  use <version>       Switch to a specific JDK version (--exact/--user/--sys)");
-    ctx_.out->line(OutputLevel::Info, L"  download <version>  Download JDK and auto-setup (--mirror/exe/java/--user/--sys)");
+    ctx_.out->line(OutputLevel::Info, L"  use <version>       Switch to a specific JDK version (--exact)");
+    ctx_.out->line(OutputLevel::Info, L"  download <version>  Download JDK and auto-setup (--mirror/exe/java)");
     ctx_.out->line(OutputLevel::Info, L"  remove              Remove JDK or clean env (env/all/temp/trash/<version>)");
     ctx_.out->line(OutputLevel::Info, L"  rollback            Restore a deleted JDK from trash (list/<version>)");
     ctx_.out->line(OutputLevel::Info, L"");
     ctx_.out->line(OutputLevel::Info, L"Environment:");
-    ctx_.out->line(OutputLevel::Info, L"  env                 Register JMT directory in PATH (--user/--sys)");
+    ctx_.out->line(OutputLevel::Info, L"  env                 Register JMT directory in PATH");
     ctx_.out->line(OutputLevel::Info, L"  shell               Open new CMD with JMT environment");
     ctx_.out->line(OutputLevel::Info, L"");
     ctx_.out->line(OutputLevel::Info, L"Data:");

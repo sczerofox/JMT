@@ -18,25 +18,14 @@ std::wstring ElevationGate::buildCommandLine(const std::vector<std::wstring>& ar
 }
 
 ElevationDecision ElevationGate::ensure(bool requiresElevation,
-                                        bool allowsUserScope,
                                         const std::vector<std::wstring>& args,
                                         AppContext& ctx) {
     if (!requiresElevation || ctx.isElevated) {
         return ElevationDecision{true, ExitCode::Ok};
     }
-    // --user：只改当前用户的环境变量，不需要管理员权限
-    if (allowsUserScope && hasFlag(args, L"--user")) {
-        return ElevationDecision{true, ExitCode::Ok};
-    }
     return requestElevation(args, ctx);
 }
 
-bool ElevationGate::hasFlag(const std::vector<std::wstring>& args, const std::wstring& flag) {
-    for (const auto& arg : args) {
-        if (arg == flag) return true;
-    }
-    return false;
-}
 
 ElevationDecision ElevationGate::requestElevation(const std::vector<std::wstring>& args,
                                                   AppContext& ctx) {

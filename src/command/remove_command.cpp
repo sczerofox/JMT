@@ -6,7 +6,7 @@
 #include "platform/output.hpp"
 #include "system/utils.hpp"
 #include "app/elevation_gate.hpp"
-#include "app/env_scope.hpp"
+
 #include "jdk/version_match.hpp"
 #include <algorithm>
 #include <cctype>
@@ -18,11 +18,10 @@ namespace fs = std::filesystem;
 
 // 提权前先确认目标版本存在（env/all/temp/trash 不需要校验，直接放行）
 ExitCode RemoveCommand::preflight(const std::vector<std::wstring>& args, AppContext& ctx) {
-    const EnvScope scope = EnvScope::parse(args);
-    if (scope.args.size() < 2) {
+    if (args.size() < 2) {
         return ExitCode::Ok;   // 参数错误交给 execute 提示
     }
-    const std::wstring& subCmd = scope.args[1];
+    const std::wstring& subCmd = args[1];
     if (subCmd.empty() || ::iswdigit(subCmd[0]) == 0) {
         return ExitCode::Ok;   // 子命令分支（env/all/temp/trash）或非法参数
     }
@@ -37,19 +36,19 @@ ExitCode RemoveCommand::preflight(const std::vector<std::wstring>& args, AppCont
 
 ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     // 解析 --user / --sys（提权已由 main / REPL 按命令元数据统一处理）
-    const EnvScope scope = EnvScope::parse(args);
-    const EnvTarget target = scope.target;
-    const std::vector<std::wstring>& filteredArgs = scope.args;
+    const EnvTarget target = EnvTarget::Auto;
+    
+    const std::vector<std::wstring>& filteredArgs = args;
 
     // 检查是否有子命令
     if (filteredArgs.size() < 2) {
-        ctx.out->line(OutputLevel::Error, L"用法: remove <子命令> [--user|--sys]");
+        ctx.out->line(OutputLevel::Error, L"用法: remove <子命令>");
         ctx.out->line(OutputLevel::Info, L"  子命令: env      - 清理 JMT 管理的 JDK PATH 和 JMT 自身 PATH，恢复 Oracle javapath");
         ctx.out->line(OutputLevel::Info, L"           all     - 完全清理所有 JMT 相关 PATH 条目和缓存");
         ctx.out->line(OutputLevel::Info, L"           temp    - 删除 .temp 下载缓存目录");
         ctx.out->line(OutputLevel::Info, L"           trash   - 永久清空回收站 (.trash)");
         ctx.out->line(OutputLevel::Info, L"           <版本号> - 删除指定版本的 JDK，自动切换到最大版本（若为当前版本）");
-        ctx.out->line(OutputLevel::Info, L"  示例: remove env, remove all, remove 17, remove --user env");
+        ctx.out->line(OutputLevel::Info, L"  示例: remove env, remove all, remove 17");
         return ExitCode::BadArgs;
     }
 
@@ -170,7 +169,7 @@ ExitCode RemoveCommand::execute(const std::vector<std::wstring>& args, AppContex
         }
 
         if (!pathCleanupOk) {
-            ctx.out->line(OutputLevel::Error, L"PATH 清理未全部完成，请检查权限或改用 --user / --sys 指定目标");
+            ctx.out->line(OutputLevel::Error, L"PATH 清理未全部完成，请以管理员身份运行后重试");
             return ExitCode::PermissionDenied;
         }
         ctx.out->line(OutputLevel::Success, L"完全清理完成");

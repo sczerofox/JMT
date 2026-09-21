@@ -209,7 +209,7 @@ class IElevator {                                           // platform/elevator
 
 所有命令位于 `src/command/`，命名 `<名称>_command.cpp`，类名 `<名称>Command`。通用模式：
 
-1. 解析参数（剔除 `--user` / `--sys` 等目标参数）
+1. 解析参数
 2. 若需要且当前未提权 → 拼装完整命令行调用 `ElevationHelper::RelaunchElevated`，成功则父进程 `return 0`
 3. 调用服务层
 4. 通过 `PrintInfo` / `PrintSuccess` / `PrintWarning` / `PrintError` 输出，返回退出码
@@ -239,7 +239,7 @@ class IElevator {                                           // platform/elevator
 
 ### 3.5 remove — 删除与清理
 
-参数预处理：`--user` → `EnvTarget::UserOnly`，`--sys` → `EnvTarget::SystemOnly`，其余进入 `filteredArgs`。缺子命令返回 `1`。
+参数预处理：缺子命令返回 `1`；其余参数进入 `filteredArgs`。
 
 | 子命令 | 实现要点 |
 |--------|----------|
@@ -348,7 +348,7 @@ static void restoreOracleJavaPath(EnvTarget target = EnvTarget::Auto);
 
 **getCurrentVersion**：按「**用户 PATH 优先 → 系统 PATH**」的顺序读取（Windows 上用户 PATH 先于系统 PATH 生效；此前只读系统 PATH，导致写在用户 PATH 里的 JDK 被判定为「当前无版本」），对首个匹配 JDK bin 的条目用 `jdk(?:1\.(\d+)|[-_]?(\d+))` 提取版本号；都没有则返回空串。该函数在 `search` 中用于判断「PATH 是否已有 JDK」。
 
-**作用域**：`setCurrentJdk` / `clearCurrentJdk` / `removeOracleJavaPath` / `restoreOracleJavaPath` 均接受 `EnvTarget`，由命令层经 `EnvScope` 解析 `--user` / `--sys` 后传入；不传则用 `Auto`（先系统、失败再用户）。
+**作用域**：`setCurrentJdk` / `clearCurrentJdk` / `removeOracleJavaPath` / `restoreOracleJavaPath` 均接受 `EnvTarget`；命令层统一使用 `Auto`（先系统、失败再用户）。命令行不再暴露 `--user` / `--sys`。
 
 ### 4.3 JmtPathService — 自身 PATH 注册
 
@@ -525,7 +525,7 @@ main（需要管理员）→ DownloadCommand::execute
 ### 6.4 `jmt remove 17`
 
 ```
-main（需要管理员）→ RemoveCommand::execute（解析 --user/--sys）
+main（需要管理员）→ RemoveCommand::execute
   → scanJdks(false)（空则 force 重扫）→ 定位版本 17，未命中返回 2
   → 当前版本 == 17 ?
        是 → 剩余版本取最大 → setCurrentJdk；无剩余 → clearCurrentJdk
@@ -562,23 +562,23 @@ main（不提权）→ DataCommand::execute(["data","input"])
 提权判断集中在 `app/elevation_gate.hpp`，由命令元数据驱动，`main.cpp` 与 `REPL` 共用同一条路径：
 
 ```cpp
-// 命令声明自己是否需要管理员权限、是否支持 --user
+// 命令声明自己是否需要管理员权限
 [[nodiscard]] bool requiresElevation() const override { return true; }   // use/env/remove/search/download
-[[nodiscard]] bool allowsUserScope() const override { return true; }     // 同上五个命令
+
 
 // 调用方（main / REPL）
 const ElevationDecision decision = ElevationGate::ensure(
-        command->requiresElevation(), command->allowsUserScope(), args, ctx);
+        command->requiresElevation(), args, ctx);
 if (!decision.proceed) return toInt(decision.code);   // 已启动提权进程或提权失败
 ```
 
 - `ElevationDecision{proceed, code}`：`proceed == false` 表示「已启动提权进程（`code == Ok`）」或「提权失败（`code == PermissionDenied`，对应退出码 3）」，调用方据此停止执行当前进程的命令
-- `--user` 免提权：当命令 `allowsUserScope()` 且命令行含 `--user`（`ElevationGate::hasFlag`）时直接放行，由 `EnvScope` 把 `EnvTarget::UserOnly` 传给服务层
+- 需要管理员权限的命令一律走正常提权流程（阶段 1 曾引入的 `--user/--sys` 作用域开关已在后续版本移除）
 - `data input` 与 `rollback <版本>` 这类按子命令提权的命令，使用 `ElevationGate::requestElevation(args, ctx)`（无条件请求提权）
 - 命令行拼接（含空格参数加引号）由 `ElevationGate::buildCommandLine` 统一实现；提示语固定为「需要管理员权限，正在请求提权...」，失败提示「提权失败，请手动以管理员身份运行」
 - 骨架阶段之前，main 与 7 个命令各自复制了一份等价实现（语义已分叉）；现在命令内部不再有任何提权代码
 
-`main.cpp` 中的豁免分支只覆盖 `remove` 带 `--user`（以及一个永远不会命中的 `search --user` 分支），而 `RemoveCommand` 内部并无同样豁免，因此该豁免实际被命令层覆盖（见 10.4）。
+（历史说明：阶段 1 曾按「`main.cpp` 豁免 + 命令内再检查」两处判断提权，该双份逻辑已在骨架阶段合并为 `ElevationGate` 单一入口。）
 
 ### 7.2 需要/不需要提权的命令
 
@@ -786,8 +786,8 @@ build/jmt_tests.exe --suite path_utils
 | 提交 | 内容 |
 |------|------|
 | phase1/1 | `WinRegistry` 用户级改用 `HKCU\Environment`；`targetsFor()` 取代下标运算；写模式下键不存在则创建 |
-| phase1/2 | `CommandBase::allowsUserScope()` + `ElevationGate` 的 `--user` 免提权判定 |
-| phase1/3 | `app/env_scope.hpp` 统一解析 `--user/--sys`；五个命令透传 target；`getCurrentVersion` 改为用户优先；`remove env/all` 检查写入返回值 |
+| phase1/2 | （已移除）`CommandBase::allowsUserScope()` + `ElevationGate` 的 `--user` 免提权判定 |
+| phase1/3 | （作用域开关已移除，保留其余改动）`getCurrentVersion` 用户优先；`remove env/all` 检查写入返回值 |
 | phase1/4 | `ConsoleOutput` 非控制台回退 UTF-8 + CRLF；`progress/clearProgress` 在重定向下空操作 |
 | phase1/5 | `jdk/download_plan`（源选择纯逻辑）+ `executePlan` 逐条轮询；demo 包跳过 |
 | phase1/6 | `exe` 参数生效：`downloadInstallerOnly` 只下载安装包 |
