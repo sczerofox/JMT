@@ -29,8 +29,31 @@ static LONG WINAPI JmtUnhandledExceptionFilter(EXCEPTION_POINTERS* info) {
     const DWORD code = (info != nullptr && info->ExceptionRecord != nullptr)
                                ? info->ExceptionRecord->ExceptionCode
                                : 0;
-    wchar_t message[256];
-    swprintf_s(message, L"[ERROR] 程序异常终止（异常代码 0x%08X），请把上面的输出反馈给开发者\r\n", code);
+    const void* address = (info != nullptr && info->ExceptionRecord != nullptr)
+                                  ? info->ExceptionRecord->ExceptionAddress
+                                  : nullptr;
+
+    // 把故障地址换算成「模块 + 偏移」，这样只看输出就能定位到具体代码
+    wchar_t location[160] = L"未知位置";
+    HMODULE module = nullptr;
+    if (address != nullptr &&
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCWSTR>(address), &module) &&
+        module != nullptr) {
+        wchar_t modulePath[MAX_PATH] = {0};
+        GetModuleFileNameW(module, modulePath, MAX_PATH);
+        const wchar_t* moduleName = wcsrchr(modulePath, L'\\');
+        moduleName = moduleName != nullptr ? moduleName + 1 : modulePath;
+        const unsigned long long offset =
+                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
+                                                reinterpret_cast<uintptr_t>(module));
+        swprintf_s(location, L"%s+0x%llX", moduleName, offset);
+    }
+
+    wchar_t message[512];
+    swprintf_s(message,
+               L"[ERROR] 程序异常终止（异常代码 0x%08X，位置 %s），请把上面的输出反馈给开发者\r\n",
+               code, location);
 
     HANDLE handle = GetStdHandle(STD_ERROR_HANDLE);
     DWORD written = 0;

@@ -102,11 +102,18 @@ void ConsoleOutput::line(OutputLevel level, const std::wstring& text) {
 void ConsoleOutput::progress(const std::wstring& text) {
     HANDLE handle = consoleHandle();
     if (!isConsoleHandle(handle)) return;   // 重定向时进度行无意义
-    CONSOLE_SCREEN_BUFFER_INFO info;
-    GetConsoleScreenBufferInfo(handle, &info);
+
+    // 拿不到缓冲区信息时不做光标操作，直接写一行，保证进度显示永远不会成为故障点
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    if (!GetConsoleScreenBufferInfo(handle, &info)) {
+        DWORD written = 0;
+        WriteConsoleW(handle, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
+        return;
+    }
+    const SHORT width = info.dwSize.X > 0 ? info.dwSize.X : 120;
     const COORD position = {0, info.dwCursorPosition.Y};
     DWORD written = 0;
-    FillConsoleOutputCharacterW(handle, L' ', info.dwSize.X, position, &written);
+    FillConsoleOutputCharacterW(handle, L' ', static_cast<DWORD>(width), position, &written);
     SetConsoleCursorPosition(handle, position);
     WriteConsoleW(handle, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
 }
@@ -114,17 +121,18 @@ void ConsoleOutput::progress(const std::wstring& text) {
 void ConsoleOutput::clearProgress() {
     HANDLE handle = consoleHandle();
     if (!isConsoleHandle(handle)) return;
-    CONSOLE_SCREEN_BUFFER_INFO info;
-    GetConsoleScreenBufferInfo(handle, &info);
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    if (!GetConsoleScreenBufferInfo(handle, &info)) return;
+    const SHORT width = info.dwSize.X > 0 ? info.dwSize.X : 120;
     const COORD position = {0, info.dwCursorPosition.Y};
     DWORD written = 0;
-    FillConsoleOutputCharacterW(handle, L' ', info.dwSize.X, position, &written);
+    FillConsoleOutputCharacterW(handle, L' ', static_cast<DWORD>(width), position, &written);
     SetConsoleCursorPosition(handle, position);
 }
 
 bool ConsoleOutput::supportsProgress() const {
     // stdout 被重定向（文件/管道）时无法原地刷新，此时调用方应改用普通行
-    return isConsoleHandle(GetStdHandle(STD_OUTPUT_HANDLE));
+    return progressEnabled_ && isConsoleHandle(GetStdHandle(STD_OUTPUT_HANDLE));
 }
 
 void ConsoleOutput::blank() {

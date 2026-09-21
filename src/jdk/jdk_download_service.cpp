@@ -187,6 +187,8 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
     int maxPercent = -1;
     int nextHeartbeatSec = 5;
     const int64_t startedAt = static_cast<int64_t>(GetTickCount64());
+    // 只查询一次输出能力，避免在每次进度回调里重复走虚函数
+    const bool liveProgress = out_.supportsProgress();
 
     // 边等边读：把 curl 的进度条解析成 JMT 自己的进度显示；期间响应 Ctrl+C
     while (WaitForSingleObject(pi.hProcess, 300) == WAIT_TIMEOUT) {
@@ -217,7 +219,7 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
             }
             const int milestone = curl_output::milestoneCrossed(lastMilestone, percent);
             const bool periodic = (elapsedSec >= nextHeartbeatSec);
-            if (!out_.supportsProgress() && (milestone > 0 || periodic)) {
+            if (!liveProgress && (milestone > 0 || periodic)) {
                 if (milestone > 0) {
                     lastMilestone = milestone;
                 }
@@ -232,7 +234,7 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
             // 拿不到百分比（连接中/服务端不报总长）：每 5 秒一行，避免看起来像卡住
             nextHeartbeatSec = elapsedSec + 5;
             const std::wstring phase = (downloadedBytes > 0) ? L"正在下载..." : L"正在连接...";
-            if (out_.supportsProgress()) {
+            if (liveProgress) {
                 out_.progress(phase + L" 已用时 " + std::to_wstring(elapsedSec) +
                               L" 秒    已下载 " + downloadedText);
             } else {

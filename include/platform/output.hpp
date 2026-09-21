@@ -30,11 +30,15 @@ public:
     void blank() override;
     [[nodiscard]] bool supportsProgress() const override;
 
+    // 诊断开关：设 JMT_NO_PROGRESS=1 时强制退化为普通行输出（用于排查进度渲染相关问题）
+    void setProgressEnabled(bool enabled) { progressEnabled_ = enabled; }
+
 private:
     void writeLine(const wchar_t* tag, const std::wstring& text, int attributes);
 
     void* handle_ = nullptr;   // HANDLE：避免在端口头文件引入 windows.h
     bool useVT_ = false;
+    bool progressEnabled_ = true;
 };
 
 // 静默实现：后台任务与测试使用

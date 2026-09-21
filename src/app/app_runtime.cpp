@@ -10,6 +10,12 @@ AppRuntime::AppRuntime(const AppPaths& paths, bool isInteractive)
           jmtPath_(registry_, output_) {
     output_.init();          // 等价于旧的 InitConsole()
 
+    // 诊断开关：JMT_NO_PROGRESS=1 时不做原地刷新，改为普通行输出
+    wchar_t noProgress[8] = {0};
+    if (GetEnvironmentVariableW(L"JMT_NO_PROGRESS", noProgress, 8) > 0 && noProgress[0] != L'0') {
+        output_.setProgressEnabled(false);
+    }
+
     ctx_.paths = paths;
     ctx_.out = &output_;
     ctx_.registry = &registry_;
