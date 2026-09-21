@@ -29,8 +29,10 @@ static bool isInputInteractive() {
 static int chooseSource(const std::vector<JdkDownloadService::SourceOption>& sources,
                         int explicitChoice, IOutput& out) {
     if (sources.empty()) {
-        out.line(OutputLevel::Error, L"该版本没有可用的下载源");
-        return -1;
+        // 没有候选源：交给后续流程统一报「没有可用于该版本的下载源」并返回网络/磁盘类退出码，
+        // 保持与「源选择」功能引入之前一致的退出码语义
+        out.line(OutputLevel::Warning, L"该版本没有可用的下载源，将按默认流程尝试");
+        return 0;
     }
 
     if (explicitChoice > 0) {
@@ -279,9 +281,9 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     }
 
     if (installPath == L"EXE_DOWNLOADED") {
-        ctx.out->line(OutputLevel::Info,
-                      L"JDK 安装程序已下载到 .temp 目录，请手动完成安装"
-                      L"(注意：请定期清理.temp文件夹 防止文件占用磁盘空间 清理命令 remove temp)");
+        ctx.out->line(OutputLevel::Info, L"JDK 安装程序已下载到 .temp 目录，请手动完成安装");
+        ctx.out->line(OutputLevel::Warning,
+                      L"注意：请定期清理 .temp 文件夹，防止占用磁盘空间（清理命令：remove temp）");
         return ExitCode::Ok;
     }
 

@@ -80,14 +80,14 @@ void ConsoleOutput::writeLine(const wchar_t* tag, const std::wstring& text, int 
             ansiPrefix = L"\033[37m";
         }
         // 与旧实现逐字节一致：颜色前缀 + 正文 + 复位 + 换行
-        const std::wstring output = ansiPrefix + body + L"\033[0m\n";
-        WriteConsoleW(handle, output.c_str(), static_cast<DWORD>(output.size()), &written, nullptr);
-    } else {
-        SetConsoleTextAttribute(handle, static_cast<WORD>(attributes));
-        const std::wstring output = body + L"\n";
-        WriteConsoleW(handle, output.c_str(), static_cast<DWORD>(output.size()), &written, nullptr);
-        SetConsoleTextAttribute(handle, kDefaultAttributes);
-    }
+            const std::wstring output = ansiPrefix + body + L"\033[0m\r\n";
+            WriteConsoleW(handle, output.c_str(), static_cast<DWORD>(output.size()), &written, nullptr);
+        } else {
+            SetConsoleTextAttribute(handle, static_cast<WORD>(attributes));
+            const std::wstring output = body + L"\r\n";
+            WriteConsoleW(handle, output.c_str(), static_cast<DWORD>(output.size()), &written, nullptr);
+            SetConsoleTextAttribute(handle, kDefaultAttributes);
+        }
 }
 
 void ConsoleOutput::line(OutputLevel level, const std::wstring& text) {
@@ -134,6 +134,6 @@ void ConsoleOutput::blank() {
         return;
     }
     DWORD written = 0;
-    const wchar_t* newline = L"\n";
-    WriteConsoleW(handle, newline, 1, &written, nullptr);
+    const wchar_t* newline = L"\r\n";
+    WriteConsoleW(handle, newline, 2, &written, nullptr);
 }
