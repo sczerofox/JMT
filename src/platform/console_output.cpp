@@ -126,3 +126,14 @@ bool ConsoleOutput::supportsProgress() const {
     // stdout 被重定向（文件/管道）时无法原地刷新，此时调用方应改用普通行
     return isConsoleHandle(GetStdHandle(STD_OUTPUT_HANDLE));
 }
+
+void ConsoleOutput::blank() {
+    HANDLE handle = consoleHandle();
+    if (!isConsoleHandle(handle)) {
+        writeUtf8(handle, L"\r\n");
+        return;
+    }
+    DWORD written = 0;
+    const wchar_t* newline = L"\n";
+    WriteConsoleW(handle, newline, 1, &written, nullptr);
+}

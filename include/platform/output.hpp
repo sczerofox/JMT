@@ -12,6 +12,8 @@ public:
     virtual void line(OutputLevel level, const std::wstring& text) = 0;
     virtual void progress(const std::wstring& text) = 0;
     virtual void clearProgress() = 0;
+    // 输出一个空行（不带 [INFO] 之类前缀）
+    virtual void blank() = 0;
     // 是否支持「原地刷新」的进度行（真实控制台为 true；重定向/管道为 false）
     [[nodiscard]] virtual bool supportsProgress() const = 0;
 };
@@ -25,6 +27,7 @@ public:
     void line(OutputLevel level, const std::wstring& text) override;
     void progress(const std::wstring& text) override;
     void clearProgress() override;
+    void blank() override;
     [[nodiscard]] bool supportsProgress() const override;
 
 private:
@@ -40,5 +43,6 @@ public:
     void line(OutputLevel, const std::wstring&) override {}
     void progress(const std::wstring&) override {}
     void clearProgress() override {}
+    void blank() override {}
     [[nodiscard]] bool supportsProgress() const override { return false; }
 };

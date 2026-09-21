@@ -46,19 +46,22 @@ static int chooseSource(const std::vector<JdkDownloadService::SourceOption>& sou
     for (const auto& source : sources) {
         totalLinks += static_cast<size_t>(source.candidateCount);
     }
-    out.line(OutputLevel::Info, L"");
+    out.blank();
     out.line(OutputLevel::Info, L"查找到可用源：" + std::to_wstring(sources.size()) +
                                  L"（候选链接共 " + std::to_wstring(totalLinks) + L" 条）");
-    out.line(OutputLevel::Info, L"");
+    out.blank();
     out.line(OutputLevel::Info, L"请选择要使用的源：");
     for (const auto& source : sources) {
         std::wstring line = L"             " + std::to_wstring(source.index) + L". " + source.name;
+        if (source.official) {
+            line += L" (速度慢)";   // 官方源需要先解析重定向，且通常比镜像慢
+        }
         if (source.candidateCount > 1) {
             line += L"（" + std::to_wstring(source.candidateCount) + L" 条链接）";
         }
         out.line(OutputLevel::Info, line);
     }
-    out.line(OutputLevel::Info, L"");
+    out.blank();
 
     if (!isInputInteractive()) {
         out.line(OutputLevel::Info, L"（非交互环境：按顺序自动尝试全部源）");
@@ -68,6 +71,7 @@ static int chooseSource(const std::vector<JdkDownloadService::SourceOption>& sou
     out.line(OutputLevel::Info, L"请输入您选择的源（回车默认选择: 1 ）：");
     std::wstring input;
     std::getline(std::wcin, input);
+    out.blank();   // 用户输入后换行（无回显的终端也能保证下一行输出从行首开始）
     if (input.empty()) {
         return 1;
     }

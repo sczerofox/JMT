@@ -1017,7 +1017,7 @@ std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
 bool JdkDownloadService::tryZipSource(const std::wstring& url, const std::wstring& version,
                                       const std::wstring& targetDir) {
     const std::wstring tempFile = tempDownloadPath(L"zip", url);
-    out_.line(OutputLevel::Info, L"正在下载 JDK " + version + L"（ZIP）: " + url);
+    out_.line(OutputLevel::Info, L"正在下载 JDK " + version + L"（ZIP）...");
     int httpStatus = 0;
     int64_t downloadedBytes = 0;
     int speedBps = 0;
@@ -1054,7 +1054,7 @@ std::wstring JdkDownloadService::tryExeSource(const std::wstring& url, const std
     if (fileName.empty()) fileName = L"jmt_download.exe";
     const std::wstring tempFile = JoinPath(tempDirectory(), fileName);
 
-    out_.line(OutputLevel::Info, L"正在下载 EXE 安装程序: " + url);
+    out_.line(OutputLevel::Info, L"正在下载 EXE 安装程序...");
     int httpStatus = 0;
     int64_t downloadedBytes = 0;
     int speedBps = 0;
@@ -1066,7 +1066,7 @@ std::wstring JdkDownloadService::tryExeSource(const std::wstring& url, const std
     out_.line(OutputLevel::Info, L"下载完成: " + ToWideString(curl_output::formatBytes(downloadedBytes)) +
                                  L"，平均 " + ToWideString(curl_output::formatSpeed(speedBps)));
     out_.line(OutputLevel::Info, L"EXE 文件已保存到: " + tempFile);
-    out_.line(OutputLevel::Warning, L"请手动运行此 EXE 安装 JDK " + version + L"，然后运行 'jmt search' 刷新缓存");
+    out_.line(OutputLevel::Warning, L"提示：请手动运行此 EXE 安装 JDK " + version + L"，然后运行 'jmt search' 刷新缓存");
     out_.line(OutputLevel::Info, L"建议安装路径: " + targetDir);
     return L"EXE_DOWNLOADED";
 }
