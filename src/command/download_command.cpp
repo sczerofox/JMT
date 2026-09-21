@@ -279,7 +279,9 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     }
 
     if (installPath == L"EXE_DOWNLOADED") {
-        ctx.out->line(OutputLevel::Info, L"JDK 安装程序已下载到 .temp 目录，请手动完成安装");
+        ctx.out->line(OutputLevel::Info,
+                      L"JDK 安装程序已下载到 .temp 目录，请手动完成安装"
+                      L"(注意：请定期清理.temp文件夹 防止文件占用磁盘空间 清理命令 remove temp)");
         return ExitCode::Ok;
     }
 
