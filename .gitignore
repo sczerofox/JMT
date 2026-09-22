@@ -41,7 +41,6 @@ Release/
 .repo/
 .temp/
 .trash/
-.data/
 
 # ---------- 内部文档与协作配置（不随源码发布） ----------
 CLAUDE.md

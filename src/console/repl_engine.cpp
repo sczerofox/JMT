@@ -3,10 +3,12 @@
 #include "platform/output.hpp"
 #include "app/elevation_gate.hpp"
 #include "common/cancel_token.hpp"
+#include "common/version.hpp"
 #include "system/utils.hpp"
 #include <windows.h>
 #include <iostream>
 #include <csignal>
+#include <string>
 
 static volatile sig_atomic_t g_interrupted = 0;
 static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
@@ -41,6 +43,10 @@ void ReplEngine::run() {
         const std::wstring& cmd = tokens[0];
         if (cmd == L"exit" || cmd == L"quit")
             break;
+
+        // 真正要执行命令了，先空一行：让输出与上面那行 "jmt> xxx" 分开，便于阅读
+        ctx_.out->blank();
+
         auto* command = registry_.findCommand(cmd);
         if (!command) {
             ctx_.out->line(OutputLevel::Error, L"未知命令，输入 'help' 查看帮助");
@@ -76,29 +82,23 @@ void ReplEngine::run() {
 }
 
 void ReplEngine::printBanner() {
-    ctx_.out->line(OutputLevel::Info, L"=====================================");
-    ctx_.out->line(OutputLevel::Info, L"Java Manager Tool v1.7");
-    ctx_.out->line(OutputLevel::Info, L"=====================================");
+    // 版本行直接用应用名 + 版本号 + 构建日期；不再画上下两条分隔线，保持界面简洁
+    ctx_.out->line(OutputLevel::Info,
+                   std::wstring(jmt::kAppName) + L"  " + jmt::kVersion +
+                           L"  ( build  " + jmt::kBuildDate + L" )");
+    ctx_.out->blank();
     ctx_.out->line(OutputLevel::Info, L"Usage:");
     ctx_.out->line(OutputLevel::Info, L"");
     ctx_.out->line(OutputLevel::Info, L"JDK Management:");
     ctx_.out->line(OutputLevel::Info, L"  search              Scan and auto-setup JDK (--force)");
     ctx_.out->line(OutputLevel::Info, L"  list                List installed Java versions");
     ctx_.out->line(OutputLevel::Info, L"  use <version>       Switch to a specific JDK version (--exact)");
-    ctx_.out->line(OutputLevel::Info, L"  download <version>  Download JDK and auto-setup (--mirror/exe/java)");
+    ctx_.out->line(OutputLevel::Info, L"  download <version>  Download JDK and auto-setup (exe)");
     ctx_.out->line(OutputLevel::Info, L"  remove              Remove JDK or clean env (env/all/temp/trash/<version>)");
     ctx_.out->line(OutputLevel::Info, L"  rollback            Restore a deleted JDK from trash (list/<version>)");
     ctx_.out->line(OutputLevel::Info, L"");
-    ctx_.out->line(OutputLevel::Info, L"Environment:");
+    ctx_.out->line(OutputLevel::Info, L"Environment / Other:");
     ctx_.out->line(OutputLevel::Info, L"  env                 Register JMT directory in PATH");
-    ctx_.out->line(OutputLevel::Info, L"  shell               Open new CMD with JMT environment");
-    ctx_.out->line(OutputLevel::Info, L"");
-    ctx_.out->line(OutputLevel::Info, L"Data:");
-    ctx_.out->line(OutputLevel::Info, L"  data (output/input) Export JDK list or import and install JDKs");
-    ctx_.out->line(OutputLevel::Info, L"    output            Export JDK list to .data\\ver_out.txt");
-    ctx_.out->line(OutputLevel::Info, L"    input             Import and install JDKs from .data\\ver_out.txt");
-    ctx_.out->line(OutputLevel::Info, L"");
-    ctx_.out->line(OutputLevel::Info, L"Other:");
     ctx_.out->line(OutputLevel::Info, L"  version             Show JMT version");
     ctx_.out->line(OutputLevel::Info, L"  help [command]      Show help");
     ctx_.out->line(OutputLevel::Info, L"  exit                Exit interactive mode");

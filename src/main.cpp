@@ -7,10 +7,8 @@
 #include "command/remove_command.hpp"
 #include "command/download_command.hpp"
 #include "command/version_command.hpp"
-#include "command/shell_command.hpp"
 #include "command/help_command.hpp"
 #include "command/rollback_command.hpp"
-#include "command/data_command.hpp"
 #include "console/repl_engine.hpp"
 #include "app/app_runtime.hpp"
 #include "common/cancel_token.hpp"
@@ -87,9 +85,6 @@ int wmain(int argc, wchar_t* argv[]) {
     AppRuntime runtime(AppPaths::fromExecutable(), argc == 1);
     AppContext& ctx = runtime.context();
 
-    // ---------- 初始化资源映射 ----------
-    runtime.download().reloadMappings();
-
     // 构建命令注册表
     CommandRegistry registry;
     registry.registerCommand(L"search", std::make_unique<SearchCommand>());
@@ -99,10 +94,8 @@ int wmain(int argc, wchar_t* argv[]) {
     registry.registerCommand(L"remove", std::make_unique<RemoveCommand>());
     registry.registerCommand(L"download", std::make_unique<DownloadCommand>());
     registry.registerCommand(L"version", std::make_unique<VersionCommand>());
-    registry.registerCommand(L"shell", std::make_unique<ShellCommand>());
     registry.registerCommand(L"help", std::make_unique<HelpCommand>(registry));
     registry.registerCommand(L"rollback", std::make_unique<RollbackCommand>());
-    registry.registerCommand(L"data", std::make_unique<DataCommand>());
 
     // 解析命令
     std::vector<std::wstring> args;

@@ -13,17 +13,11 @@ static void PrintSubcommandDetail(IOutput& out, const std::wstring& cmd) {
         out.line(OutputLevel::Info, L"    temp              删除 .temp 下载缓存");
         out.line(OutputLevel::Info, L"    trash             永久清空回收站");
         out.line(OutputLevel::Info, L"    <版本号>          删除指定版本 JDK（移至回收站）");
-    } else if (cmd == L"data") {
-        out.line(OutputLevel::Info, L"");
-        out.line(OutputLevel::Info, L"  子命令：");
-        out.line(OutputLevel::Info, L"    output            导出当前 JDK 列表到 .data\\ver_out.txt");
-        out.line(OutputLevel::Info, L"    input             从 .data\\ver_out.txt 导入并安装 JDK");
     } else if (cmd == L"download") {
         out.line(OutputLevel::Info, L"");
-        out.line(OutputLevel::Info, L"  可选参数：");
-        out.line(OutputLevel::Info, L"    --mirror          使用镜像加速下载");
-        out.line(OutputLevel::Info, L"    exe               强制下载 EXE 安装程序到 .temp");
-        out.line(OutputLevel::Info, L"    java              使用官方源下载（较慢）");
+        out.line(OutputLevel::Info, L"  说明：能下载到 ZIP 时自动解压安装；只有安装包（EXE/MSI）时下载到 .temp 并提示手动安装");
+        out.line(OutputLevel::Info, L"        源按优先级自动回退：南京大学 → 清华 TUNA → 华为云 → Adoptium 官方，无需选择");
+        out.line(OutputLevel::Info, L"        版本覆盖面：8 / 11 / 16+ 有 ZIP；12~26 另有华为云 GA 包；8 还可下 EXE 手动安装");
     } else if (cmd == L"rollback") {
         out.line(OutputLevel::Info, L"");
         out.line(OutputLevel::Info, L"  参数：");
@@ -53,18 +47,12 @@ ExitCode HelpCommand::execute(const std::vector<std::wstring>& args, AppContext&
         ctx.out->line(OutputLevel::Info, L"  search             扫描并自动设置 JDK（--force）");
         ctx.out->line(OutputLevel::Info, L"  list               列出已安装版本");
         ctx.out->line(OutputLevel::Info, L"  use <版本号>       切换当前版本（--exact）");
-        ctx.out->line(OutputLevel::Info, L"  download <版本号>  从镜像/官方源下载并自动配置（--mirror/exe/java）");
+        ctx.out->line(OutputLevel::Info, L"  download <版本号>  下载并自动配置 JDK（ZIP 自动装 / 安装包手动装）");
         ctx.out->line(OutputLevel::Info, L"  remove             删除 JDK（env/all/temp/trash/<版本号>）");
         ctx.out->line(OutputLevel::Info, L"  rollback           从回收站恢复 JDK（list/<版本号>）");
         ctx.out->line(OutputLevel::Info, L"");
-        ctx.out->line(OutputLevel::Info, L"环境配置：");
+        ctx.out->line(OutputLevel::Info, L"环境与其他：");
         ctx.out->line(OutputLevel::Info, L"  env                注册 JMT 目录到系统 PATH");
-        ctx.out->line(OutputLevel::Info, L"  shell              打开已配置 JMT 环境的新终端");
-        ctx.out->line(OutputLevel::Info, L"");
-        ctx.out->line(OutputLevel::Info, L"数据管理：");
-        ctx.out->line(OutputLevel::Info, L"  data               导出/导入 JDK 列表（output/input）");
-        ctx.out->line(OutputLevel::Info, L"");
-        ctx.out->line(OutputLevel::Info, L"其他：");
         ctx.out->line(OutputLevel::Info, L"  version            显示 JMT 版本信息");
         ctx.out->line(OutputLevel::Info, L"  help [命令]        显示此帮助或命令详情");
     }

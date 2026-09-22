@@ -9,8 +9,6 @@ AppPaths AppPaths::rootedAt(const std::wstring& root) {
     paths.cacheFile = JoinPath(root, L".jmt_cache");
     paths.tempDir = JoinPath(root, L".temp");
     paths.trashDir = JoinPath(root, L".trash");
-    paths.repoDir = JoinPath(root, L".repo");
-    paths.dataDir = JoinPath(root, L".data");
     return paths;
 }
 

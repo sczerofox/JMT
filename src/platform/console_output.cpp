@@ -30,19 +30,16 @@ void writeUtf8(HANDLE handle, const std::wstring& text) {
     WriteFile(handle, buffer.data(), static_cast<DWORD>(buffer.size()), &written, nullptr);
 }
 
-struct TagAndAttributes {
-    const wchar_t* tag;
-    int attributes;
-};
-
-TagAndAttributes describe(OutputLevel level) {
+// 只保留颜色分级，不再打印 [INFO]/[SUCCESS]/[WARN] 这类文字前缀：
+// 等级语义完全由颜色表达（绿=成功、红=错误、黄=警告、默认=普通）。
+int attributesFor(OutputLevel level) {
     switch (level) {
-        case OutputLevel::Success: return {L"[SUCCESS] ", FOREGROUND_GREEN};
-        case OutputLevel::Error:   return {L"[ERROR] ", FOREGROUND_RED};
-        case OutputLevel::Warning: return {L"[WARN] ", FOREGROUND_RED | FOREGROUND_GREEN};
-        case OutputLevel::Debug:   return {L"[DEBUG] ", kDefaultAttributes};
+        case OutputLevel::Success: return FOREGROUND_GREEN;
+        case OutputLevel::Error:   return FOREGROUND_RED;
+        case OutputLevel::Warning: return FOREGROUND_RED | FOREGROUND_GREEN;
+        case OutputLevel::Debug:   return kDefaultAttributes;
         case OutputLevel::Info:
-        default:                   return {L"[INFO] ", kDefaultAttributes};
+        default:                   return kDefaultAttributes;
     }
 }
 
@@ -58,13 +55,12 @@ void ConsoleOutput::init() {
     }
 }
 
-void ConsoleOutput::writeLine(const wchar_t* tag, const std::wstring& text, int attributes) {
-    const std::wstring body = std::wstring(tag) + text;
+void ConsoleOutput::writeLine(const std::wstring& text, int attributes) {
     HANDLE handle = consoleHandle();
     DWORD written = 0;
 
     if (!isConsoleHandle(handle)) {
-        writeUtf8(handle, body + L"\r\n");
+        writeUtf8(handle, text + L"\r\n");
         return;
     }
 
@@ -79,15 +75,15 @@ void ConsoleOutput::writeLine(const wchar_t* tag, const std::wstring& text, int 
         } else {
             ansiPrefix = L"\033[37m";
         }
-        // 与旧实现逐字节一致：颜色前缀 + 正文 + 复位 + 换行
-            const std::wstring output = ansiPrefix + body + L"\033[0m\r\n";
-            WriteConsoleW(handle, output.c_str(), static_cast<DWORD>(output.size()), &written, nullptr);
-        } else {
-            SetConsoleTextAttribute(handle, static_cast<WORD>(attributes));
-            const std::wstring output = body + L"\r\n";
-            WriteConsoleW(handle, output.c_str(), static_cast<DWORD>(output.size()), &written, nullptr);
-            SetConsoleTextAttribute(handle, kDefaultAttributes);
-        }
+        // 颜色前缀 + 正文 + 复位 + 换行
+        const std::wstring output = ansiPrefix + text + L"\033[0m\r\n";
+        WriteConsoleW(handle, output.c_str(), static_cast<DWORD>(output.size()), &written, nullptr);
+    } else {
+        SetConsoleTextAttribute(handle, static_cast<WORD>(attributes));
+        const std::wstring output = text + L"\r\n";
+        WriteConsoleW(handle, output.c_str(), static_cast<DWORD>(output.size()), &written, nullptr);
+        SetConsoleTextAttribute(handle, kDefaultAttributes);
+    }
 }
 
 void ConsoleOutput::line(OutputLevel level, const std::wstring& text) {
@@ -95,8 +91,7 @@ void ConsoleOutput::line(OutputLevel level, const std::wstring& text) {
     if (level == OutputLevel::Debug) return;   // 旧 PrintDebug 只在 Debug 构建输出
 #endif
 
-    const TagAndAttributes described = describe(level);
-    writeLine(described.tag, text, described.attributes);
+    writeLine(text, attributesFor(level));
 }
 
 void ConsoleOutput::progress(const std::wstring& text) {

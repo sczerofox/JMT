@@ -2,7 +2,7 @@
 
 #include <string>
 
-// 运行期路径集中定义：此前 .temp/.trash/.repo/.data 等字面量散落在服务与命令中，
+// 运行期路径集中定义：此前 .temp/.trash 等字面量散落在服务与命令中，
 // 现在只有这里知道目录布局。
 struct AppPaths {
     std::wstring exeDir;      // jmt.exe 所在目录（无尾随反斜杠）
@@ -10,8 +10,6 @@ struct AppPaths {
     std::wstring cacheFile;   // exeDir\.jmt_cache
     std::wstring tempDir;     // exeDir\.temp
     std::wstring trashDir;    // exeDir\.trash
-    std::wstring repoDir;     // exeDir\.repo
-    std::wstring dataDir;     // exeDir\.data
 
     // 以指定目录为根计算全部子路径（测试可指向临时目录）
     static AppPaths rootedAt(const std::wstring& root);

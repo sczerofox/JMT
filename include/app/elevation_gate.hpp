@@ -22,7 +22,7 @@ public:
                                                   const std::vector<std::wstring>& args,
                                                   AppContext& ctx);
 
-    // 无条件请求提权（供 data input / rollback <版本> 这类按子命令提权的命令使用）
+    // 无条件请求提权（供 rollback <版本> 这类按子命令提权的命令使用）
     [[nodiscard]] static ElevationDecision requestElevation(const std::vector<std::wstring>& args,
                                                             AppContext& ctx);
 

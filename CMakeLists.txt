@@ -19,15 +19,13 @@ set(JMT_CORE_SOURCES
         src/command/remove_command.cpp
         src/command/download_command.cpp
         src/command/version_command.cpp
-        src/command/shell_command.cpp
         src/command/help_command.cpp
         src/command/rollback_command.cpp
-        src/command/data_command.cpp
         src/app/app_paths.cpp
         src/app/elevation_gate.cpp
         src/app/app_runtime.cpp
         src/jdk/jdk_scan_service.cpp
-        src/jdk/download_plan.cpp
+        src/jdk/download_sources.cpp
         src/jdk/version_match.cpp
         src/jdk/java_env_service.cpp
         src/jdk/jdk_download_service.cpp
