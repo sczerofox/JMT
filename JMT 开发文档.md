@@ -1,4 +1,4 @@
-# JMT（Java Manager Tool）开发文档 V1.7
+# JMT（Java Manager Tool）开发文档 V2.0
 
 > Windows 平台 JDK 版本管理工具 | C++17 | 纯 Win32 API | 无第三方依赖
 
@@ -285,7 +285,7 @@ ZIP 全不可用则下载安装包并让命令层提示手动安装。
 
 ### 3.9 version / help
 
-- `version`：输出 `include/common/version.hpp` 里的 `kAppName` / `kVersion` / `kBuildDate`（单一来源，REPL banner 复用同一组常量）
+- `version`：输出 `include/common/version.hpp` 里的 `kAppName` / `kVersion` / `kBuildDate`（单一来源，REPL banner 复用同一组常量）；`kVersionNumber` 是无 `v` 前缀的纯版本号，供 User-Agent（`JMT/2.0`）这类需要拼接的场景使用
 - `help`：无参数打印分组帮助；`help <命令>` 先 `registry_.findCommand` 取 `getHelp()`，再对 `search` / `download` / `remove` / `rollback` 追加子命令说明；未知命令提示错误但返回 `0`
 
 ---
@@ -882,6 +882,6 @@ build/jmt_tests.exe --suite path_utils
 
 ---
 
-**文档版本**：V1.7（对应 `hotfix` 分支 `include/` / `src/` 模块化重构后的代码）
-**最后更新**：2026-09-16
-**版本对应**：Java Manager Tool v1.7 (build 2026.09.23)
+**文档版本**：V2.0（对应 `master` 分支：模块化重构 + 版本模型 + 下载子系统重构后的代码）
+**最后更新**：2026-09-23
+**版本对应**：Java Manager Tool v2.0 (build 2026.09.23)

@@ -11,6 +11,7 @@
 #include "jdk/jdk_download_service.hpp"
 #include "jdk/download_sources.hpp"
 #include "common/cancel_token.hpp"
+#include "common/version.hpp"
 #include "network/curl_output.hpp"
 #include "common/java_version.hpp"
 #include "jdk/jdk_scan_service.hpp"
@@ -93,8 +94,14 @@ std::wstring JdkDownloadService::tempDownloadPath(const std::wstring& ext, const
     return JoinPath(tempDirectory(), L"jmt_download_" + std::wstring(suffix) + L"." + ext);
 }
 
-// 统一的 User-Agent：镜像方可以据此识别 JMT（而不是无名的 curl）
-static const wchar_t* kJmtUserAgent = L"JMT/1.7 (Windows; +https://github.com/sczerofox/JMT)";
+// 统一的 User-Agent：镜像方可以据此识别 JMT（而不是无名的 curl）。
+// 版本号取自 version.hpp，避免升级时漏改这里。
+static std::wstring jmtUserAgent() {
+    static const std::wstring agent =
+            L"JMT/" + std::wstring(jmt::kVersionNumber) +
+            L" (Windows; +https://github.com/sczerofox/JMT)";
+    return agent;
+}
 
 // 读取正在下载的目标文件大小（拿不到时返回 0）；用于「已下载 X MB」显示
 static int64_t downloadedSizeOf(const std::wstring& path) {
@@ -132,7 +139,7 @@ bool JdkDownloadService::downloadFileWithCurl(const std::wstring& url, const std
     // 因此既拿得到进度，也不会污染 JMT 的输出流。
     std::wstring cmdLine = L"\"" + std::wstring(curlPath) + L"\" -L --progress-bar"
                            L" --retry 2 --connect-timeout 15 --max-time 900"
-                           L" -A \"" + kJmtUserAgent + L"\""
+                           L" -A \"" + jmtUserAgent() + L"\""
                            L" -o \"" + destPath + L"\" \"" + cleanUrl + L"\""
                            L" -w \"%{http_code} %{size_download} %{time_total} %{speed_download}\"";
 
@@ -470,7 +477,7 @@ bool JdkDownloadService::officialDownloadInfo(const std::wstring& version,
     const std::wstring apiUrl = L"https://api.adoptium.net/v3/assets/latest/" + version +
                                 L"/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse";
 
-    HINTERNET hSession = WinHttpOpen(kJmtUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    HINTERNET hSession = WinHttpOpen(jmtUserAgent().c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return false;
 
@@ -571,7 +578,7 @@ JdkDownloadService::ProbeResult JdkDownloadService::probeUrl(const std::wstring&
     DeleteFileW(headFile.c_str());
 
     const std::wstring cmdLine = L"\"" + std::wstring(curlPath) + L"\" -sL --max-time 30"
-                                 L" -r 0-3 -A \"" + kJmtUserAgent + L"\""
+                                 L" -r 0-3 -A \"" + jmtUserAgent() + L"\""
                                  L" -o \"" + headFile + L"\" \"" + url + L"\""
                                  L" -w \"%{http_code}|%{content_type}|%{size_download}\"";
 
