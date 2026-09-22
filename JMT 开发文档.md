@@ -32,7 +32,7 @@ JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for No
 - 交互式 REPL（无参启动进入 `jmt>` 提示符）与单次命令模式
 - 固定磁盘全盘扫描，识别合法 JDK（校验 `bin\java.exe` + `bin\javac.exe` + `lib` 目录）
 - 直接读写注册表中的系统 PATH（不使用 `JAVA_HOME`），修改后广播 `WM_SETTINGCHANGE`
-- 多源下载：内置华为云镜像 + 可扩展的 `.repo` 外部源 + Adoptium 官方回退
+- 多源下载：Adoptium API 解析权威文件名 + 国内镜像按实测速度回退（南京大学 / 清华 TUNA / 华为云）+ 官方直链兜底，**不维护任何 URL 清单**
 - 下载引擎双通道：`curl.exe` 优先，失败回退 WinHTTP Range 多线程分片
 - 删除先进回收站（`.trash`），支持 `rollback` 还原
 - 极简自带测试框架 + CTest，业务代码统一编译为静态库 `jmt_core` 供 exe 与测试共用
@@ -45,7 +45,7 @@ JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for No
 
 ### 1.3 命令总览
 
-共 **11 个命令**（`src/main.cpp` 中注册），提权方式见第 7 章。
+共 **9 个命令**（`src/main.cpp` 中注册），提权方式见第 7 章。
 
 | 命令 | 功能 | 提权位置 |
 |------|------|----------|
@@ -55,9 +55,7 @@ JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for No
 | `env` | 把 JMT 自身目录加入 PATH | `main.cpp` + 命令内 |
 | `remove <子命令>` | 删除 JDK / 清理环境 / 清空回收站 | `main.cpp` + 命令内 |
 | `download <ver>` | 下载并安装 JDK（镜像/EXE/官方） | `main.cpp` + 命令内 |
-| `data <output\|input>` | 导出 / 导入 JDK 列表 | 命令内（仅 `input`） |
 | `rollback <ver\|list>` | 从回收站恢复 JDK | 命令内（`list` 除外） |
-| `shell` | 打开新终端进入交互模式并关闭旧窗口 | 无需 |
 | `version` | 显示版本信息 | 无需 |
 | `help [命令]` | 显示帮助或命令详情 | 无需 |
 
@@ -70,13 +68,13 @@ JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for No
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ 入口层  src/main.cpp                                        │
-│ InitConsole → reloadMappings → 构建 JmtContext → 注册命令    │
+│ InitConsole → 构建 JmtContext → 注册命令                     │
 │ → REPL（无参）/ 提权判断 + 单次执行                          │
 └──────────────────────────┬─────────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────────┐
 │ 命令层  include/command/ + src/command/                     │
-│ CommandBase 接口 → CommandRegistry 映射 → 11 个命令实现      │
+│ CommandBase 接口 → CommandRegistry 映射 → 9 个命令实现       │
 │ 每个命令：解析参数 → （必要时提权）→ 调用服务层 → 输出结果   │
 └──────────────────────────┬─────────────────────────────────┘
                            │
@@ -113,13 +111,13 @@ JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for No
 ```
 include/                       src/
 ├── app/                       ├── app/        app_paths / app_context / app_runtime / elevation_gate
-├── command/                   ├── command/    command_registry.cpp + 11 个 *_command.cpp
-├── jdk/                       ├── jdk/        4 个服务实现（实例类，注入端口）
+├── command/                   ├── command/    command_registry.cpp + 9 个 *_command.cpp
+├── jdk/                       ├── jdk/        4 个服务实现（实例类，注入端口）+ download_sources（镜像站与候选构建）
 ├── platform/                  ├── platform/   console_output / win_registry / win_elevator（端口适配器）
 ├── system/                    ├── system/     path_utils / file_lock / utils（无状态工具）
 ├── network/                   ├── network/    multi_thread_downloader.cpp
 ├── console/                   ├── console/    repl_engine / repl_utils
-└── common/                    ├── common/     string_helper.cpp + exit_code.hpp / result.hpp
+└── common/                    ├── common/     string_helper.cpp + exit_code.hpp / result.hpp / version.hpp
                                └── main.cpp    入口（不属于 jmt_core）
 resources/
 ├── app.rc                     仅包含 IDI_ICON1 ICON "app.ico"
@@ -135,7 +133,7 @@ tests/                         自带框架 + CTest（.gitignore 排除，仓库
 
 ```cpp
 struct AppPaths {                 // 运行期路径的唯一来源
-    std::wstring exeDir, exePath, cacheFile, tempDir, trashDir, repoDir, dataDir;
+    std::wstring exeDir, exePath, cacheFile, tempDir, trashDir;
     static AppPaths rootedAt(const std::wstring& root);   // 测试指向临时目录
     static AppPaths fromExecutable();
 };
@@ -261,40 +259,34 @@ class IElevator {                                           // platform/elevator
 
 ### 3.6 download — 下载安装
 
-参数解析：`--mirror` → `useMirror`，`java` → `forceOfficial`，`exe` 仅识别后跳过（当前与默认策略等价，见 10.4），其余第一个非选项参数作为版本号。版本号用 `^(\d+)` 提取主版本。
+**没有开关参数**：第一个非选项参数作为版本号（保留完整版本 `17.0.2` / `8u202`，仅做合法性校验）。
+`--mirror` / `java` / `--source` / `exe` 与交互式选源菜单都已移除——格式选择（ZIP 自动安装 vs 安装包手动安装）由下载服务按「能拿到什么」自动决定。
 
-分支：
+调用：
 
-| 条件 | 调用 |
-|------|------|
-| `forceOfficial` | `JdkDownloadService::downloadFromOfficial(版本)` |
-| `useMirror` | `JdkDownloadService::downloadFromMirror(版本)` |
-| 默认 | `JdkDownloadService::downloadAndInstall(版本)` |
+```cpp
+JdkDownloadService::downloadAndInstall(版本);   // 返回安装目录 / L"EXE_DOWNLOADED" / 空串
+```
+
+内部五步：版本覆盖面预检 → `officialDownloadInfo` 取权威文件名与官方直链 →
+`buildDownloadPlan` 按源类型生成候选 → 逐个**探测**后下载 ZIP（自动解压安装）→
+ZIP 全不可用则下载安装包并让命令层提示手动安装。
 
 覆盖安装：若缓存中已存在该版本，先询问 `y/n`；确认后 `MoveToTrash`（与 `remove` 相同的目录结构与元数据）→ 更新缓存 → 当前版本被删则切到最大版本或清空 PATH → 清理 `JAVA_HOME<版本>`。
 
-安装成功后：`scanJdks(true)` 强制重扫，按「路径等于安装路径 or 版本号等于目标版本」设置当前版本；都没匹配到则退化为设置最大版本。返回值为 `EXE_DOWNLOADED` 时表示只下载了 EXE 安装包（返回 `0`），空字符串表示失败（返回 `4`）。
+安装成功后：`scanJdks(true)` 强制重扫，按「路径等于安装路径」设置当前版本；都没匹配到则退化为设置最大版本。返回 `EXE_DOWNLOADED` 表示只下载了安装包（返回 `0`），空字符串表示失败（返回 `4`）。
 
-### 3.7 data — 导入导出
-
-- `output`：`scanJdks(false, cachePath, true)` → 写入 `exeDir\.data\ver_out.txt`，每行 `版本号|安装路径`（UTF-8 带 BOM）
-- `input`：提权后读取 `ver_out.txt`，逐行解析（容忍 `\r`）；
-  - `isValidJdk(path)` 为真 → 跳过并计数
-  - 否则交互询问 `y/n`；确认后以该路径的**父目录**为安装根调用 `downloadAndInstall(版本, 安装根)`
-  - 汇总输出「无需安装 / 成功安装 / 已下载 EXE / 失败」四项计数，有失败则返回 `4`，否则 `0`；有成功安装时强制重扫刷新缓存
-
-### 3.8 rollback — 回收站回退
+### 3.7 rollback — 回收站回退
 
 - `rollback`（不带参数）与 `rollback list` 等价：列 `.trash\jdk-*` 目录，用 `^jdk-(.+)_\d{8}_\d{6}$` 提取版本（版本可含点/下划线，如 `17.0.9`、`1.8.0_202`），读取 `.original_path`（经 `CleanPath` 去控制字符与尾分隔符）后输出；不需要提权。列表末尾会打印恢复用法
 - `rollback <版本>`：提权后按 `jdk-<版本>_*` 匹配、以 `ftCreationTime` 取最新条目；`.original_path` 缺失返回 `4`；原路径已存在返回 `2`；父目录用递归辅助函数创建，失败返回 `3`
 - 恢复：`MoveFileW` 优先；失败则 `ShellExecuteExW(runas)` 执行 `xcopy /E /I /Y` 并等待退出码，成功后删除回收站副本
 - 最后删除 `.original_path`、强制重扫刷新缓存
 
-### 3.9 shell / version / help
+### 3.9 version / help
 
-- `shell`：`ShellExecuteW(cmd.exe, "/k \"<exeDir>\\jmt.exe\"")` 打开新窗口，再用 `WriteConsoleInputW` 向当前控制台注入 `exit\r`，让旧窗口自行退出
-- `version`：`PrintInfo(L"JMT v1.7 (build 2026.07.13)")`（硬编码）
-- `help`：无参数打印分组帮助；`help <命令>` 先 `registry_.findCommand` 取 `getHelp()`，再对 `search` / `download` / `remove` / `data` / `rollback` 追加子命令说明；未知命令提示错误但返回 `0`
+- `version`：输出 `include/common/version.hpp` 里的 `kAppName` / `kVersion` / `kBuildDate`（单一来源，REPL banner 复用同一组常量）
+- `help`：无参数打印分组帮助；`help <命令>` 先 `registry_.findCommand` 取 `getHelp()`，再对 `search` / `download` / `remove` / `rollback` 追加子命令说明；未知命令提示错误但返回 `0`
 
 ---
 
@@ -361,40 +353,69 @@ static bool registerJmtPath(const std::wstring& exeDir, EnvTarget target = EnvTa
 ### 4.4 JdkDownloadService — 下载与安装
 
 ```cpp
-static std::wstring downloadAndInstall(const std::wstring& version, const std::wstring& installRoot = L"");
-static std::wstring downloadFromMirror(const std::wstring& version, const std::wstring& installRoot = L"");
-static std::wstring downloadFromOfficial(const std::wstring& version, const std::wstring& installRoot = L"");
-static void reloadMappings();
+std::wstring downloadAndInstall(const std::wstring& version);
+bool officialDownloadInfo(const std::wstring& version,
+                          std::wstring& outFileName, std::wstring& outDirectUrl);
+JdkDownloadService::ProbeResult probeUrl(const std::wstring& url, bool wantZip);
 ```
 
-返回值语义：安装目录路径 / `L"EXE_DOWNLOADED"`（仅下载了 EXE，需手动安装）/ 空串（失败）。
+返回值语义：安装目录路径 / `L"EXE_DOWNLOADED"`（只下载了安装包，需手动安装）/ 空串（失败）。
 
-**映射管理**
+**源与链接的构建**（`jdk/download_sources.hpp`）
 
-- `initBuiltinMappings()`：ZIP 源覆盖主版本 11~26（含各补丁版本），EXE 源覆盖主版本 6~13；数据源为华为云 `repo.huaweicloud.com` 与 `mirrors.huaweicloud.com`
-- `ensureExternalMappingFiles()`：创建/补齐 `.repo\jdk_zip_repo.txt`、`.repo\jdk_exe_repo.txt`；若检测到文件以 `FF FE` 开头（旧版遗留 UTF-16 LE）则删除重建；写入时用 `WriteFileText`（UTF-8 带 BOM），内容为注释头 + 内置 URL 列表
-- `loadExternalMappings()`：逐行读取（跳过空行与 `#` 注释），`ExtractVersionFromUrl` 用 `[/-](\d+)(?:\.\d+)*[/_-]` 提取主版本后追加到对应列表
-- `zipUrlsFor` / `exeUrlsFor`：返回该版本的**完整**源列表（内置在前、外部追加）
+不再有内置映射表，也没有 `.repo` 外部源文件——链接是实时拼出来的。源按类型区分，因为布局不同：
 
-**下载计划**（`jdk/download_plan.hpp`，阶段 1 引入）
+| 源类型 | 链接构建 | 覆盖 |
+|--------|----------|------|
+| `Adoptium` | `<base>/<主版本>/jdk/x64/windows/<官方文件名>` | 8、11、16+（仅最新补丁） |
+| `HuaweiGa` | `<base>/<主版本>/openjdk-<主版本>_windows-x64_bin.zip` | 12~26，只有初始 GA 包 |
+| `HuaweiLegacyExe` | 固定链接表 | 6、7、8、9、10 的 EXE（手动安装） |
 
-源选择被抽成纯逻辑，便于脱离网络测试：
+1. `officialDownloadInfo()` 请求
+   `https://api.adoptium.net/v3/assets/latest/<版本>/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse`，
+   用 `WinHTTP`（自动重定向 + `Accept: application/json`）取回 JSON，按 `"name"` 字段找 `.zip`（其次 `.msi`）产物，
+   并用 `rfind("\"link\"")` 取同一条目的官方直链。用 assets 而非 binary/installer 的 307 重定向：直接给出权威文件名与直链。
+2. `majorVersionFromFileName()`：`OpenJDK21U-..._21.0.12.1_1.zip` → `21`，取不到就放弃拼链接（不猜）。
+3. `buildDownloadPlan(major, fileName, plan)`：**按源分别判断覆盖面**（`adoptiumHasZip` / `huaweiGaHasZip`），
+   产出 `zipSteps`（自动安装）与 `manualSteps`（手动安装）两组候选。
+   早期版本用单个 `zipOk` 同时控制两种源，会给华为云 GA 拼出它没收录的版本（如 11）的链接——已修。
+4. 源清单 `kSources`（`src/jdk/download_sources.cpp`，数组顺序即优先级）：
+   南京大学 → 清华 TUNA → 华为云 GA → 华为云旧版 EXE。
+   **各站路径大小写不同**（南大 `/adoptium/`、清华 `/Adoptium/`），必须在表里分别写对，不能共用模板。
+5. 主流程（`downloadAndInstall`）：解析 metadata → 构建候选 → 逐条**探测** → ZIP 下载安装 →
+   ZIP 全失败则下载安装包并返回 `EXE_DOWNLOADED`；官方直链作为最后一个 ZIP 候选兜底。
 
-- `DownloadMode`：`Default`（ZIP → EXE → 官方）、`MirrorOnly`、`OfficialOnly`
-- `DownloadPlan::build(mode, installerOnly, zipUrls, exeUrls)`：按顺序展开为 `DownloadStep` 列表；`-demos` URL 不进入步骤，而是记录到 `skippedDemoUrls` 供提示
-- `installerOnly = true`（命令行 `exe`）：计划只含 EXE 源（官方 API 只提供 ZIP，不参与该模式）
-- 执行由 `JdkDownloadService::executePlan` 完成：逐步尝试，输出「源 i/n」，单个源失败继续下一个；全部失败返回空串
+**下载前的探测**（`probeUrl`）
 
-**安装路径**：`installRoot` 为空时用 `GetInstallRoot()`——从 `D:` 依次到 `Z:` 尝试 `Program Files\Java`，返回第一个已存在或创建成功的目录，全部失败则落地 `C:\Program Files\Java`；目标目录为 `<root>\jdk-<主版本>`。若目标目录已是合法 JDK 则直接返回，不重复下载。
+对每个候选执行 `curl -sL --max-time 30 -r 0-3 -o <临时> -w "%{http_code}|%{content_type}|%{size_download}"`，
+用「Content-Type 不含 html」+「魔数为 `PK`(ZIP) / `MZ`(安装包)」判定真假。
 
-**下载引擎**（`DownloadFile`）
+必要性（实测）：中科大对文件请求返回 **HTTP 200 + text/html** 的 "Verifying your browser" 页面，
+只按状态码判断会把假页面当成功，白下 100+MB。这是必须的防护，不是可选优化。
 
-1. `DownloadFileWithCurl`：`SearchPathW` 找 `curl.exe`（找不到回退 `C:\Windows\System32\curl.exe`），执行 `-L --retry 3 -o <目标文件> <URL> --progress-bar`，非 0 退出码即失败并删除半成品
-2. 回退 `DownloadFileWithMultiThread`：`MultiThreadDownloader`，4 连接 / 60 秒超时 / 重试 3 次；额外做体积（≥ 1 MB）与 ZIP 魔数（`PK\x03\x04`）校验
+**版本覆盖面**（`hasZipCandidate` / `hasManualInstaller`）
 
-**解压与修复**：`ExtractZip` 调 `powershell -Command "Expand-Archive -Path ... -DestinationPath ... -Force"`（`CREATE_NO_WINDOW`）；解压后若不是合法 JDK，则 `FixNestedJdkDirectory` 检查「只存在一个子目录且该子目录是合法 JDK」，是则把内容上移并删除空壳目录。
+| 版本 | 情况 |
+|------|------|
+| 8 / 11 / 16+ | Adoptium 镜像有 ZIP → 自动安装 |
+| 12 ~ 26 | 即使 Adoptium 没有，华为云 GA 也有 ZIP（初始 GA 包） |
+| 8 | 另有 EXE → ZIP 失败时手动安装 |
+| 9 / 10 | 两头都没有 → 进入网络请求前直接报错 |
+| 6 / 7 / 9 / 10 | 无 ZIP（Adoptium 未发布、华为云 GA 也没有），但有旧库 EXE → 下载后手动安装 |
 
-**官方回退**：`GetOfficialDownloadInfo` 请求 `https://api.adoptium.net/v3/binary/latest/<版本>/ga/windows/x64/jdk/hotspot/normal/eclipse`，禁用自动重定向（`WINHTTP_DISABLE_REDIRECTS`），收到 3xx 后从 `Location` 头取真实下载地址与文件名。
+**安装路径**：`GetInstallRoot()`——从 `D:` 依次到 `Z:` 尝试 `Program Files\Java`，返回第一个已存在或创建成功的目录，全部失败则落地 `C:\Program Files\Java`；目标目录为 `<root>\jdk-<主版本>`。若目标目录已是合法 JDK 则直接返回，不重复下载。
+
+**下载引擎**（`downloadFile`）
+
+所有请求先过 `HostThrottle::acquire`（并发/间隔/预算/拉黑），再：
+
+1. `downloadFileWithCurl`：`SearchPathW` 找 `curl.exe`（找不到回退 `C:\Windows\System32\curl.exe`），
+   执行 `-L --progress-bar --retry 2 --connect-timeout 15 --max-time 900 -A <UA> -o <目标> <URL> -w "%{http_code} %{size_download} %{time_total} %{speed_download}"`；
+   输出被重定向到管道用于解析进度与状态码，非 0 退出码即失败并删除半成品
+2. HTTP 429/503/403 视为限速/拒绝：**不再换引擎重试**（避免叠加请求），记入节流器后放弃该主机
+3. 其它失败回退 `downloadFileWithMultiThread`：`MultiThreadDownloader`，连接数跟随节流策略、60 秒超时、重试 2 次；额外做体积（≥ 1 MB）与 ZIP 魔数（`PK\x03\x04`）校验
+
+**解压与修复**：`extractZip` 调 `powershell -Command "Expand-Archive -Path ... -DestinationPath ... -Force"`（`CREATE_NO_WINDOW`）；解压后若不是合法 JDK，则 `fixNestedJdkDirectory` 检查「只存在一个子目录且该子目录是合法 JDK」，是则把内容上移并删除空壳目录。
 
 ---
 
@@ -474,8 +495,8 @@ bool download(const std::wstring& url, const std::wstring& destPath,
 
 ### 5.7 console 模块
 
-- `ConsoleOutput`（`src/platform/console_output.cpp`）：`init()` 设置代码页 UTF-8 并在支持时开启虚拟终端；`line()` 按等级加 `[INFO]/[SUCCESS]/[WARN]/[ERROR]/[DEBUG]` 前缀并用 ANSI 颜色 + `WriteConsoleW` 输出，Debug 等级仅在 `_DEBUG` 构建生效；`progress()` 覆盖当前行、`clearProgress()` 清空进度行。`NullOutput` 用于静默场景
-- `repl_engine.cpp`：交互循环（banner、`std::getline(std::wcin, line)`、`SetConsoleCtrlHandler` 捕获 `CTRL_C_EVENT` 后重显提示符、`exit` / `quit` 退出、未知命令提示）；每条命令先经 `ElevationGate::ensure` 再执行，命令返回非 `Ok` 时用 Debug 输出返回码
+- `ConsoleOutput`（`src/platform/console_output.cpp`）：`init()` 设置代码页 UTF-8 并在支持时开启虚拟终端；`line()` **不再输出 `[INFO]/[SUCCESS]/[WARN]/[ERROR]/[DEBUG]` 前缀**，只按等级做 ANSI 颜色 + `WriteConsoleW`（绿=Success、红=Error、黄=Warning、默认=Info/Debug；非 VT 控制台走 `SetConsoleTextAttribute`；重定向时输出无颜色的纯 UTF-8 正文），Debug 等级仅在 `_DEBUG` 构建生效；`progress()` 覆盖当前行、`clearProgress()` 清空进度行。`NullOutput` 用于静默场景
+- `repl_engine.cpp`：交互循环（banner、`std::getline(std::wcin, line)`、`SetConsoleCtrlHandler` 捕获 `CTRL_C_EVENT` 后重显提示符、`exit` / `quit` 退出、未知命令提示）；提示符在读取命令**之前**打印，因此每条有效命令执行前由 REPL 统一 `blank()` 一次，把「命令行」与「命令输出」分开（命令自身不再各加空行）；每条命令先经 `ElevationGate::ensure` 再执行，命令返回非 `Ok` 时用 Debug 输出返回码
 - `repl_utils.cpp`：`splitCommandLine` 按空格切分并支持双引号包裹
 
 ---
@@ -511,16 +532,23 @@ main（需要管理员）→ UseCommand::execute(["use","21"])
 
 ```
 main（需要管理员）→ DownloadCommand::execute
-  → 解析参数（--mirror / exe / java）→ 主版本号提取
+  → 版本号校验（无开关参数）
   → scanJdks(false)：已存在则询问覆盖
         确认 → MoveToTrash 旧目录（.trash\jdk-17_<时间戳> + .original_path）
              → 更新缓存 → 当前版本被删则切最大版本或清空 PATH → 删 JAVA_HOME17
   → JdkDownloadService::downloadAndInstall("17")
-       1) 镜像 ZIP（findZipUrl 第 0 条）→ DownloadFile → ExtractZip → 校验/修复嵌套
-       2) 镜像 EXE（findExeUrl 第 0 条）→ 下载到 .temp → 返回 EXE_DOWNLOADED
-       3) 官方 Adoptium API → 解析 307 Location → ZIP → 解压 → 校验/修复
+       1) 覆盖面预检（8/11/16+ 与 12~26 有 ZIP；6~10 走旧库 EXE 手动安装；更高版本报错）
+       2) officialDownloadInfo → 权威文件名 + 官方直链
+       3) buildDownloadPlan → zipSteps（南大、清华、华为云 GA）+ manualSteps
+       4) 逐个 zipStep：probeUrl 探测（Content-Type + PK 魔数）→ downloadFile
+                        → extractZip → 校验/修复嵌套 → versionSatisfied
+       5) 官方直链作为最后一个 ZIP 候选兜底
+       6) ZIP 全失败 → tryManualStep 下载安装包 → 返回 EXE_DOWNLOADED（提示手动安装）
   → scanJdks(true) 强制重扫 → setCurrentJdk(新版本)
 ```
+
+实测验证：`jmt download 11` 走南大镜像 ZIP，190.2 MB / 14.9 MB/s，自动装好；
+`jmt download 8`（ZIP 不可用时）下载 211.6 MB 的 EXE 并提示手动安装。
 
 ### 6.4 `jmt remove 17`
 
@@ -544,15 +572,6 @@ main → RollbackCommand::execute（list 免提权，其余提权）
   → 删除 .original_path → scanJdks(true) 刷新缓存
 ```
 
-### 6.6 `jmt data input`
-
-```
-main（不提权）→ DataCommand::execute(["data","input"])
-  → 命令内提权 → 读 .data\ver_out.txt → 逐行 版本|路径
-  → isValidJdk(path) ? 跳过 : 询问 → downloadAndInstall(版本, 父目录)
-  → 统计并输出汇总（有失败返回 4）→ 有成功安装则 scanJdks(true)
-```
-
 ---
 
 ## 7. 提权策略
@@ -574,7 +593,7 @@ if (!decision.proceed) return toInt(decision.code);   // 已启动提权进程�
 
 - `ElevationDecision{proceed, code}`：`proceed == false` 表示「已启动提权进程（`code == Ok`）」或「提权失败（`code == PermissionDenied`，对应退出码 3）」，调用方据此停止执行当前进程的命令
 - 需要管理员权限的命令一律走正常提权流程（阶段 1 曾引入的 `--user/--sys` 作用域开关已在后续版本移除）
-- `data input` 与 `rollback <版本>` 这类按子命令提权的命令，使用 `ElevationGate::requestElevation(args, ctx)`（无条件请求提权）
+- `rollback <版本>` 这类按子命令提权的命令，使用 `ElevationGate::requestElevation(args, ctx)`（无条件请求提权）
 - 命令行拼接（含空格参数加引号）由 `ElevationGate::buildCommandLine` 统一实现；提示语固定为「需要管理员权限，正在请求提权...」，失败提示「提权失败，请手动以管理员身份运行」
 - 骨架阶段之前，main 与 7 个命令各自复制了一份等价实现（语义已分叉）；现在命令内部不再有任何提权代码
 
@@ -584,7 +603,7 @@ if (!decision.proceed) return toInt(decision.code);   // 已启动提权进程�
 
 | 需要提权 | 免提权 |
 |----------|--------|
-| `search`、`use`、`env`、`remove`、`download`、`data input`、`rollback <版本>` | `list`、`version`、`shell`、`help`、`data output`、`rollback list`（只读注册表 PATH；`list` / `data output` 还会在校验缓存时顺带重写 `.jmt_cache`） |
+| `search`、`use`、`env`、`remove`、`download`、`rollback <版本>` | `list`、`version`、`help`、`rollback list`（只读注册表 PATH；`list` 还会在校验缓存时顺带重写 `.jmt_cache`） |
 
 ### 7.3 提权失败的降级
 
@@ -601,7 +620,7 @@ if (!decision.proceed) return toInt(decision.code);   // 已启动提权进程�
 |--------|------|----------|
 | 0 | 成功 | 所有命令正常返回 |
 | 1 | 参数错误 / 未知命令 | `main.cpp` 未知命令；各命令缺参、版本格式错误 |
-| 2 | 未找到 JDK / 版本 / 条目 | `search`（无 JDK）、`list`、`use`、`remove`、`rollback`、`data` |
+| 2 | 未找到 JDK / 版本 / 条目 | `search`（无 JDK）、`list`、`use`、`remove`、`rollback` |
 | 3 | 权限不足 | 提权失败、注册表写入失败、目录创建失败 |
 | 4 | 网络或磁盘错误 | 下载/解压失败、回收站移动失败、写文件失败 |
 
@@ -674,7 +693,7 @@ build/jmt_tests.exe --suite path_utils
 `.gitignore` 的规则体现了本仓库的发布口径：
 
 - 发布：`src/`、`include/`、`resources/`、`CMakeLists.txt`、`README.md`、已编译的 `cmake-build-*/jmt.exe`
-- 不发布：`.idea/`、构建中间产物、`CLAUDE.md`、`本次需求文档.txt`、`*.docx`、`tests/`，以及运行期产物 `.jmt_cache` / `.repo/` / `.temp/` / `.trash/` / `.data/`
+- 不发布：`.idea/`、构建中间产物、`CLAUDE.md`、`本次需求文档.txt`、`*.docx`、`tests/`，以及运行期产物 `.jmt_cache` / `.temp/` / `.trash/`
 
 ---
 
@@ -699,9 +718,6 @@ build/jmt_tests.exe --suite path_utils
 | 文件 | 位置 | 编码 | 格式 |
 |------|------|------|------|
 | `.jmt_cache` | exe 同级 | UTF-16 LE（无 BOM，`FileLock::writeAllText` 写入） | 每行 `版本号\|绝对路径` |
-| `.repo/jdk_zip_repo.txt` | exe 同级 | UTF-8 带 BOM（`WriteFileText`） | 每行一个 URL，`#` 为注释；检测到 UTF-16 BOM 时删除重建 |
-| `.repo/jdk_exe_repo.txt` | exe 同级 | 同上 | 同上 |
-| `.data/ver_out.txt` | exe 同级 | UTF-8 带 BOM | 每行 `版本号\|安装路径` |
 | `.trash/jdk-<版本>_<时间戳>/.original_path` | exe 同级 | UTF-8 带 BOM | 原始安装路径字符串 |
 
 读取统一经 `ReadFileText`，它按 UTF-16 BOM → UTF-16 启发式（奇数位多为 `0x00`）→ UTF-8 → 当前代码页的顺序解码，因此历史遗留编码文件通常仍可读。
@@ -714,17 +730,13 @@ build/jmt_tests.exe --suite path_utils
 | 扫描并自动配置 | `jmt search` / `jmt search --force` |
 | 查看版本列表 | `jmt list` |
 | 切换版本 | `jmt use 21` |
-| 默认策略下载 | `jmt download 17` |
-| 仅镜像下载 | `jmt download 17 --mirror` |
-| 官方源下载 | `jmt download 17 java` |
-| 导出 / 导入列表 | `jmt data output` / `jmt data input` |
+| 下载安装（ZIP 自动 / 安装包手动，源自动回退） | `jmt download 17` |
 | 删除版本 | `jmt remove 17` |
 | 查看 / 恢复回收站 | `jmt rollback list` / `jmt rollback 17` |
 | 清理下载缓存 | `jmt remove temp` |
 | 清空回收站 | `jmt remove trash` |
 | 注销 JMT 自身 PATH | `jmt remove env` |
 | 完全清理 | `jmt remove all` |
-| 新窗口交互 | `jmt shell` |
 
 ### 10.4 已知问题与实现差异
 
@@ -733,17 +745,45 @@ build/jmt_tests.exe --suite path_utils
 | # | 位置 | 现象 | 影响 |
 |---|------|------|------|
 | 1 | `src/command/search_command.cpp` 等 | `restoreOracleJavaPath` 依赖真实目录 `C:\Program Files\Common Files\Oracle\Java\javapath` 是否存在 | 单测无法覆盖「恢复 javapath」分支（该目录不存在时是空操作），目前只验证 JDK 条目语义，javapath 往返留在手测清单 |
-| 2 | `src/jdk/jdk_download_service.cpp` | 官方源（Adoptium）只提供 ZIP | `jmt download 17 exe` 这类「只要安装包」的请求只能走镜像 EXE 源，官方无法提供；阶段 2 可考虑官方 MSI/EXE 变体 |
-| 3 | `src/jdk/download_plan.cpp` | `isDemoUrl` 依赖 URL 中出现 `-demos` | 若某镜像用其它命名方式提供 demo 包，仍会被当成正式包下载 |
-| 4 | `src/command/download_command.cpp` | `exe` 与 `java` / `--mirror` 同时给出时以 `exe` 优先 | 组合开关的语义是「显式覆盖」，未做冲突提示 |
-| 5 | `src/command/help_command.cpp` | `help <未知命令>` 打印错误后仍 `return ExitCode::Ok` | 脚本无法通过退出码判断帮助参数是否有效 |
-| 6 | `src/app/elevation_gate.cpp` | 提权提示语在骨架阶段统一为「需要管理员权限，正在请求提权...」 | 仅提示文案差异（原先 main 用的是「此操作需要管理员权限，正在请求...」），行为与退出码不变 |
-| 7 | `src/platform/console_output.cpp` | `progress()` 以 `info.dwSize.X` 填充整行，未处理控制台换行/滚动边界 | 进度行在窗口边缘可能残留字符 |
-| 8 | `src/network/multi_thread_downloader.cpp` | `DownloadProgress.speed` 恒为 0 | 界面无法显示速度；`calcPercent` 在拿不到总大小时返回 `-1` |
-| 9 | `src/command/version_command.cpp` / `src/console/repl_engine.cpp` | 版本号与 banner 各自硬编码 | 升级版本需三处同步（含文档），无单一数据源 |
-| 10 | `resources/app.rc` | 只有图标，没有 `VERSIONINFO` 资源 | 文件属性页看不到版本信息，只能靠 `jmt version` |
-| 11 | `src/jdk/jdk_scan_service.cpp` | 同版本 JDK 只保留先扫描到的那一份（`seen` 去重）；扫描深度固定 3 层 | 多份同版本安装无法在 `list` 中共存；深层目录中的 JDK 不会被发现 |
-| 12 | `src/command/download_command.cpp`（官方源） | 官方 Adoptium 端点只有 `latest/{feature}`，没有按补丁版本选择 | `download 17.0.9 java` 拿到的是 17 系列最新版；靠 `versionSatisfied` 校验后放弃该源，精确版本请走镜像源（阶段 3 支持 `/v3/binary/version/...` 后消除） |
+| 2 | `src/jdk/jdk_download_service.cpp` | 官方端点只有 `latest/{feature}`，没有按补丁版本选择 | `download 17.0.9` 实际拿到的是 17 系列最新版；靠 `versionSatisfied` 校验后放弃该源，精确补丁版本需等 Adoptium 的 `/v3/binary/version/{release}` 分支接入 |
+| 3 | `src/jdk/download_sources.cpp` | 镜像列表是编译期常量 | 想换镜像/调优先级要改代码重新编译；镜像站目录改版（如大小写变化）会让该站 404 并自动回退到下一个 |
+| 4 | `src/command/help_command.cpp` | `help <未知命令>` 打印错误后仍 `return ExitCode::Ok` | 脚本无法通过退出码判断帮助参数是否有效 |
+| 5 | `src/app/elevation_gate.cpp` | 提权提示语在骨架阶段统一为「需要管理员权限，正在请求提权...」 | 仅提示文案差异（原先 main 用的是「此操作需要管理员权限，正在请求...」），行为与退出码不变 |
+| 6 | `src/platform/console_output.cpp` | `progress()` 以 `info.dwSize.X` 填充整行，未处理控制台换行/滚动边界 | 进度行在窗口边缘可能残留字符 |
+| 7 | `src/network/multi_thread_downloader.cpp` | `DownloadProgress.speed` 恒为 0；该引擎也不解析 HTTP 状态码（`outStatus` 固定为 0） | 界面无法显示速度；走 WinHTTP 回退时 429/403 的限速信号丢失，节流器无法据此拉黑主机 |
+| 8 | `resources/app.rc` | 只有图标，没有 `VERSIONINFO` 资源 | 文件属性页看不到版本信息，只能靠 `jmt version` |
+| 9 | `src/jdk/jdk_scan_service.cpp` | 同版本 JDK 只保留先扫描到的那一份（`seen` 去重）；扫描深度固定 3 层 | 多份同版本安装无法在 `list` 中共存；深层目录中的 JDK 不会被发现 |
+| 10 | `src/jdk/download_sources.cpp` | 华为云 GA 只有初始包且无目录索引 | 12~15 这类 Adoptium 未发布的版本只能拿到 GA 包（非最新补丁），无法枚举补丁版本 |
+| 11 | `src/jdk/jdk_download_service.cpp` | 探测会为每个候选多发一次 4 字节 Range 请求 | 正常代价（换取不在 HTML 假页面上白下整包）；单命令请求预算 60 次仍然充足 |
+
+已修复（保留记录，避免回退）：
+
+- **版本号单一来源**：`include/common/version.hpp` 的 `kAppName` / `kVersion` / `kBuildDate`，`jmt version` 与 REPL banner 共用
+- **`.repo` 映射表与内置华为云清单**：整体移除，改为 Adoptium API 文件名 + 各源布局实时拼链接
+- **交互式选源 / `--source` / `--mirror` / `java` / `exe` 开关**：全部移除，改为「ZIP 优先、安装包兜底」自动决策
+- **单个 `zipOk` 误判覆盖面**：曾用同一个布尔量控制 Adoptium 与华为云 GA 两种源，会给 GA 拼出它未收录版本（如 11）的链接；现按源分别判断
+- **把 HTML 假页面当安装包**：新增 `probeUrl` 探测（Content-Type + 魔数），中科大那类「HTTP 200 + 校验页」不再被误判
+
+### 10.5 镜像源测试结论（2026-09 实测）
+
+数据来源：`jdk下载分析数据.txt` + 本次实现前后的复测。
+
+| 源 | 结论 | 依据 |
+|----|------|------|
+| 南京大学 `mirrors.nju.edu.cn/adoptium/` | **采用**（第 1 优先） | 206 + `application/zip`，8 与 17/21 均可下；实测 4.16 MB/s |
+| 清华 TUNA `mirrors.tuna.tsinghua.edu.cn/Adoptium/` | **采用**（第 2） | 同上；实测 4.44 MB/s |
+| 华为云 `mirrors.huaweicloud.com/openjdk/` | **采用**（第 3） | 按大版本直连，实测覆盖 12~26；4.04 MB/s |
+| 华为云旧版 `repo.huaweicloud.com/java/jdk/` | **采用**（6~10 的 EXE） | 实测 6u45(60MB)、7u80(147MB)、8u202(222MB)、9.0.1、10.0.2 全部 200 且魔数为 `MZ` |
+| Adoptium 官方 `api.adoptium.net` | **采用**（兜底） | metadata 2KB 给权威文件名 + 直链；但下载走 GitHub，实测 22 秒才响应 |
+| 中科大 `mirrors.ustc.edu.cn` | **排除** | 文件请求返回 HTTP 200 + `text/html` 浏览器校验页（魔数 `3C 68`），原生 HTTP 客户端无法完成 |
+| 阿里云 `mirrors.aliyun.com` | **排除** | `/adoptium/`、`/openjdk/` 均 404 |
+| 北外 `mirrors.bfsu.edu.cn` | **排除** | `/Adoptium/` 404 |
+| NJU 单数域 `mirror.nju.edu.cn` | **排除** | 302 且 Location 指向自身（配置问题），有效入口是复数域 |
+
+**南大 cookie 挑战**：分析数据显示首次请求会 302 + `Set-Cookie: bcheck=true`。本次复测直连即 206，
+无需 cookie（机制已调整或已在客户端侧缓存）。实现依赖 `curl -L` 自动跟随重定向；
+若日后重新出现挑战导致南大失败，回退机制会自动切到清华，不影响可用性。
+
 
 版本模型阶段（11.2）已消除的老问题（保留记录）：
 
@@ -792,7 +832,7 @@ build/jmt_tests.exe --suite path_utils
 | phase1/5 | `jdk/download_plan`（源选择纯逻辑）+ `executePlan` 逐条轮询；demo 包跳过 |
 | phase1/6 | `exe` 参数生效：`downloadInstallerOnly` 只下载安装包 |
 
-测试套件从 4 组增加到 8 组：新增 `unit.java_env_service`（内存 IRegistry）、`unit.download_plan`（源选择）、`integration.cli_output`（管道捕获输出）、`integration.registry_user_scope`（HKCU 往返，只写自建一次性变量）。
+测试套件从 4 组增加到 8 组：新增 `unit.java_env_service`（内存 IRegistry）、`unit.download_plan`（候选链接构建）、`integration.cli_output`（管道捕获输出）、`integration.registry_user_scope`（HKCU 往返，只写自建一次性变量）。
 
 > 注意：`integration.registry_user_scope` 会写注册表，沙箱环境下会被拒绝（`Requested registry access is not allowed`），需要在沙箱外运行 `ctest`（或用管理员/普通用户终端直接跑 `jmt_tests.exe --suite registry_user_scope`）。
 
@@ -808,7 +848,7 @@ build/jmt_tests.exe --suite path_utils
 | version/6 | `CommandBase::preflight` 钩子：提权前做只读校验，版本不存在时直接返回 2 而不弹 UAC |
 | version/7 | 修复缓存读取被独占文件锁拒绝导致缓存永远失效、每次全盘扫描的问题 |
 
-**范围说明**：本轮**未改造** `data output` / `data input`（按要求暂缓）。它们的文件格式仍是 `版本号|路径`，只是版本字段现在会写成完整版本；`data input` 调用 `downloadAndInstall` 时按 `use` 相同规则处理。
+**范围说明**：`data output` / `data input` 两个命令已在本轮**整体移除**（连同 `DataCommand`、`.data` 运行期目录与 `AppPaths::dataDir` 字段）；需要迁移 JDK 列表时改用 `jmt list` 人工比对。
 
 ### 11.3 阶段 3（下载子系统）进行中
 
@@ -818,13 +858,16 @@ build/jmt_tests.exe --suite path_utils
 | download/2 | `common/cancel_token`：全局取消开关；REPL 与单次模式的 Ctrl+C 都会中断下载，`TerminateProcess` 终止 curl 子进程并删除半成品；多线程引擎各循环响应取消 |
 | download/4 | `network/curl_output`：解析 curl 的 `--progress-bar` 百分比与 `-w` 收尾统计（状态码/字节/用时/速度）+ 里程碑计算。`downloadFileWithCurl` 改为边等边读管道：百分比走 `IOutput::progress` 原地刷新，25/50/75/100% 额外打印普通行（重定向可见），无百分比时每 5 秒心跳；成功后打印「下载完成: X MB，平均 Y MB/s」 |
 | download/6 | 进度显示修正：① 去掉 curl 的 `-s`（silent 会把进度条一起关掉，导致 211MB 下载全程只显示「正在连接/下载」）；② 修复重复打印（同一心跳既走 `progress` 又走 `line`，且前者无换行造成粘连），现在每次只输出一条；③ 进度行统一带「已下载 X MB + 已用时 N 秒」，有百分比时每 10 秒或每 25% 打一行普通输出，无百分比时每 5 秒一行；④ 新增 `downloadedSizeOf()` 直接读取目标文件大小作为「已下载」来源；⑤ `parseStatsFromTail()` 从输出最后一行读 `-w` 统计（此前从头读会读到进度条里的数字，导致「下载完成: 0 KB」）；⑥ 修复 `ExtractVersionFromUrl` 把 URL 里的 IP（`http://127.0.0.1/...`）当成版本号的 bug，改为先匹配 `jdk/openjdk` 后的版本串、再回退到 `/17/` 这种独立路径段 |
-| download/7 | 进度显示去重：`IOutput` 新增 `supportsProgress()`（真实控制台 true / 重定向 false），服务层据此二选一——控制台只走原地刷新行，重定向才补 `[INFO]` 进度行，避免控制台上出现「刷新行 + INFO 行」粘在同一行的重复输出 |
+| download/7 | 进度显示去重：`IOutput` 新增 `supportsProgress()`（真实控制台 true / 重定向 false），服务层据此二选一——控制台只走原地刷新行，重定向才补进度行，避免控制台上出现「刷新行 + 进度行」粘在同一行的重复输出（当时补的是带 `[INFO]` 前缀的行，该前缀后来已整体移除） |
 | download/8 | 交互式选源与打印优化：`download_plan` 新增 `sourceDisplayName()`（主机名 → 华为云/南京大学/清华 TUNA/中科大/阿里云/Adoptium 官方/本地文件，未知主机回退主机名）与 `sourceKey()`（按主机分组，官方源单列）；`JdkDownloadService` 新增 `listSources(version, mode, installerOnly)` 与 `preferredSource` 参数（`executePlan` 把所选源排到最前，其余仍作后备）；`download` 命令打印「目标版本 / 查找到可用源 N（候选链接 M 条）/ 编号列表 / 提示选择」，支持 `--source N`、回车默认第 1 个、非交互环境自动按顺序 |
+| download/13 | **源方案重构（当前形态）**：删掉内置映射表、`.repo` 外部源文件与 `AppPaths::repoDir`，删除 `download_plan.*`（`DownloadMode` / `DownloadStepKind::MirrorExe` / `isDemoUrl` / `filterUrlsForVersion` / `sourceKey` / `sourceDisplayName`）；`officialDownloadInfo` 改走 `assets/latest` JSON 接口直接取权威文件名与官方直链（不再手工解析 307 重定向——旧实现还会漏掉查询串里的文件名）；新增 `jdk/download_sources.*`：`kMirrors`（南京大学 → 清华 TUNA → 华为云，实测延迟排序，中科大因未收录 Adoptium 被剔除）与 `buildDownloadPlan`，链接 = `<镜像>/<主版本>/jdk/x64/windows/<文件名>`（主版本由 `majorVersionFromFileName` 从文件名解析，解析不出就放弃拼链接）；`executePlan` 逐条尝试 + 官方直链兜底；删除交互式选源与 `--source` / `--mirror` / `java`，`downloadCommand` 只保留 `exe`；`exe` 模式缺 MSI 时自动回退到 ZIP 安装。端到端实测：`jmt download 21` 走南京大学镜像 11.6 MB/s，195.6 MB / 17 秒完成安装 |
+
+> `download/8` 里的 `listSources` / `SourceOption` / `--source` / `sourceDisplayName` 等已在 `download/13` 中移除，此处保留为当时的提交记录。
 
 **尚未完成**（原阶段 3 计划的其余部分，留待下一批）：
 
 1. `IDownloadEngine` 端口 + `CurlEngine` / `MultiThreadEngine` 统一抽象（当前仍按函数分支，但已全部经由节流器）
-2. 统一安装管线 `installFromSource`：消除 `tryZipSource` / `tryExeSource` / `tryOfficialZip` 三份重复（下载→校验→解压→嵌套修复→版本校验）
+2. 统一安装管线 `installFromSource`：消除 `tryZipStep` / `tryMsiStep` / `tryOfficialZip` 几份重复（下载→校验→解压→嵌套修复→版本校验）
 3. 校验增强：魔数与最小尺寸校验统一到两个引擎、可选 SHA-256（官方源 `.sha256`）、解压前 zip-slip 防护
 4. 失败源**持久化**拉黑（当前仅进程内 10 分钟）
 5. 官方源精确补丁版本（`/v3/binary/version/{release_name}`）
@@ -834,11 +877,11 @@ build/jmt_tests.exe --suite path_utils
 ### 11.4 后续阶段（尚未开始）
 
 1. **阶段 3 · 下载子系统重做**：`DownloadSource` 策略化（优先级/测速/并发重试）+ 统一的「下载→校验→解压→安装」管线 + 取消与速度上报；顺带支持官方源的精确版本（`/v3/binary/version/...`）
-2. **阶段 4 · 扫描与数据**：并行/可取消扫描、进度显示；`data output/input` 改造与版本字段迁移
+2. **阶段 4 · 扫描与数据**：并行/可取消扫描、进度显示
 3. **阶段 5 · 可测性与 CI**：注入式 fake（文件系统/HTTP）+ PATH/回收站往返集成测试 + GitHub Actions 跑 `ctest`（同时决定 `tests/` 是否改为发布）
 
 ---
 
 **文档版本**：V1.7（对应 `hotfix` 分支 `include/` / `src/` 模块化重构后的代码）
 **最后更新**：2026-09-16
-**版本对应**：JMT v1.7 (build 2026.07.13)
+**版本对应**：Java Manager Tool v1.7 (build 2026.09.23)
