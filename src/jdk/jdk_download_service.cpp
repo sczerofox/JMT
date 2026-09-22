@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <winhttp.h>
 #include "jdk/jdk_download_service.hpp"
+#include "jdk/download_sources.hpp"
 #include "common/cancel_token.hpp"
 #include "network/curl_output.hpp"
 #include "common/java_version.hpp"
@@ -18,14 +19,13 @@
 #include "network/multi_thread_downloader.hpp"
 #include <wininet.h>
 #include <memory>
-#include <regex>
 #include <vector>
 #include <map>
 #include <string>
+#include <iostream>
 #include <filesystem>
 #include <algorithm>
 #include <cstdlib>
-#include <sstream>
 
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "winhttp.lib")
@@ -428,200 +428,6 @@ bool JdkDownloadService::isValidZipFile(const std::wstring& path) {
     return (buffer[0] == 0x50 && buffer[1] == 0x4B && buffer[2] == 0x03 && buffer[3] == 0x04);
 }
 
-// ============================================================
-// ========== 资源映射管理（第二步核心功能） ==================
-// ============================================================
-
-// ---------- 获取 .repo 目录 ----------
-std::wstring JdkDownloadService::repoDirectory() {
-    if (!IsDirectory(paths_.repoDir)) {
-        CreateDirectoryW(paths_.repoDir.c_str(), nullptr);
-    }
-    return paths_.repoDir;
-}
-
-// ---------- 解析文本文件（每行一个 URL） ----------
-static std::vector<std::wstring> ReadUrlListFromFile(const std::wstring& filePath) {
-    std::vector<std::wstring> urls;
-    std::wstring content = ReadFileText(filePath);
-    if (content.empty()) return urls;
-
-    std::wstringstream ss(content);
-    std::wstring line;
-    while (std::getline(ss, line)) {
-        // 去除首尾空白
-        size_t start = line.find_first_not_of(L" \t\r\n");
-        if (start == std::wstring::npos) continue;
-        size_t end = line.find_last_not_of(L" \t\r\n");
-        line = line.substr(start, end - start + 1);
-        if (line.empty()) continue;
-        // 跳过注释行
-        if (line[0] == L'#') continue;
-        urls.push_back(line);
-    }
-    return urls;
-}
-
-// ---------- 从 URL 中提取版本号 ----------
-static std::wstring ExtractVersionFromUrl(const std::wstring& url) {
-    // 1) 优先匹配 jdk/openjdk 后面的版本（jdk-17.0.2 / openjdk-17 / jdk1.8.0_202 / jdk-8u202）
-    //    先做这一步，避免把 URL 里的 IP（http://127.0.0.1/...）或端口当成版本号
-    std::wregex jdkPattern(L"(?:jdk|openjdk)[-_]?(\\d+(?:[uU]\\d+)?(?:\\.\\d+)*)");
-    std::wsmatch match;
-    if (std::regex_search(url, match, jdkPattern) && match.size() > 1) {
-        return match[1].str();
-    }
-
-    // 2) 回退：版本号作为独立路径段出现，如 /17/ 或 /11.0.2/
-    std::wregex segmentPattern(L"/(\\d+(?:\\.\\d+)*)/");
-    if (std::regex_search(url, match, segmentPattern) && match.size() > 1) {
-        return match[1].str();
-    }
-    return L"";
-}
-
-// ---------- 加载外部映射文件 ----------
-void JdkDownloadService::loadExternalMappings() {
-    std::wstring repoDir = repoDirectory();
-
-    // 加载 zip 映射
-    std::wstring zipFile = JoinPath(repoDir, L"jdk_zip_repo.txt");
-    auto zipUrls = ReadUrlListFromFile(zipFile);
-    for (const auto& url : zipUrls) {
-        std::wstring ver = ExtractVersionFromUrl(url);
-        if (!ver.empty()) {
-            zipMap_[ver].push_back(url);
-        }
-    }
-
-    // 加载 exe 映射
-    std::wstring exeFile = JoinPath(repoDir, L"jdk_exe_repo.txt");
-    auto exeUrls = ReadUrlListFromFile(exeFile);
-    for (const auto& url : exeUrls) {
-        std::wstring ver = ExtractVersionFromUrl(url);
-        if (!ver.empty()) {
-            exeMap_[ver].push_back(url);
-        }
-    }
-}
-
-// ---------- 初始化内置映射 ----------
-void JdkDownloadService::initBuiltinMappings() {
-    // ---- ZIP 源 ----
-    // 来自您的 jdk_zip_repo.txt
-    zipMap_[L"11"].push_back(L"https://repo.huaweicloud.com/java/jdk/11+28/jdk-11_windows-x64_bin.zip");
-    zipMap_[L"11"].push_back(L"https://repo.huaweicloud.com/java/jdk/11.0.1+13/jdk-11.0.1_windows-x64_bin.zip");
-    zipMap_[L"11"].push_back(L"https://repo.huaweicloud.com/java/jdk/11.0.2+7/jdk-11.0.2_windows-x64_bin.zip");
-    zipMap_[L"11"].push_back(L"https://mirrors.huaweicloud.com/openjdk/java-jse-ri/jdk11/openjdk-11+28_windows-x64_bin.zip");
-    zipMap_[L"11"].push_back(L"https://mirrors.huaweicloud.com/openjdk/11.0.1/openjdk-11.0.1_windows-x64_bin.zip");
-    zipMap_[L"11"].push_back(L"https://mirrors.huaweicloud.com/openjdk/11.0.2/openjdk-11.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"12"].push_back(L"https://repo.huaweicloud.com/java/jdk/12+33/jdk-12_windows-x64_bin.zip");
-    zipMap_[L"12"].push_back(L"https://repo.huaweicloud.com/java/jdk/12.0.1+12/jdk-12.0.1_windows-x64_bin.zip");
-    zipMap_[L"12"].push_back(L"https://repo.huaweicloud.com/java/jdk/12.0.2+10/jdk-12.0.2_windows-x64_bin.zip");
-    zipMap_[L"12"].push_back(L"https://mirrors.huaweicloud.com/openjdk/java-jse-ri/jdk12/openjdk-12+32_windows-x64_bin.zip");
-    zipMap_[L"12"].push_back(L"https://mirrors.huaweicloud.com/openjdk/12/openjdk-12_windows-x64_bin.zip");
-    zipMap_[L"12"].push_back(L"https://mirrors.huaweicloud.com/openjdk/12.0.1/openjdk-12.0.1_windows-x64_bin.zip");
-    zipMap_[L"12"].push_back(L"https://mirrors.huaweicloud.com/openjdk/12.0.2/openjdk-12.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"13"].push_back(L"https://repo.huaweicloud.com/java/jdk/13+33/jdk-13_windows-x64_bin.zip");
-    zipMap_[L"13"].push_back(L"https://mirrors.huaweicloud.com/openjdk/13/openjdk-13_windows-x64_bin.zip");
-    zipMap_[L"13"].push_back(L"https://mirrors.huaweicloud.com/openjdk/13.0.1/openjdk-13.0.1_windows-x64_bin.zip");
-    zipMap_[L"13"].push_back(L"https://mirrors.huaweicloud.com/openjdk/13.0.2/openjdk-13.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"14"].push_back(L"https://mirrors.huaweicloud.com/openjdk/14/openjdk-14_windows-x64_bin.zip");
-    zipMap_[L"14"].push_back(L"https://mirrors.huaweicloud.com/openjdk/14.0.1/openjdk-14.0.1_windows-x64_bin.zip");
-    zipMap_[L"14"].push_back(L"https://mirrors.huaweicloud.com/openjdk/14.0.2/openjdk-14.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"15"].push_back(L"https://mirrors.huaweicloud.com/openjdk/15/openjdk-15_windows-x64_bin.zip");
-    zipMap_[L"15"].push_back(L"https://mirrors.huaweicloud.com/openjdk/15.0.1/openjdk-15.0.1_windows-x64_bin.zip");
-    zipMap_[L"15"].push_back(L"https://mirrors.huaweicloud.com/openjdk/15.0.2/openjdk-15.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"16"].push_back(L"https://mirrors.huaweicloud.com/openjdk/16/openjdk-16_windows-x64_bin.zip");
-    zipMap_[L"16"].push_back(L"https://mirrors.huaweicloud.com/openjdk/16.0.1/openjdk-16.0.1_windows-x64_bin.zip");
-    zipMap_[L"16"].push_back(L"https://mirrors.huaweicloud.com/openjdk/16.0.2/openjdk-16.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"17"].push_back(L"https://mirrors.huaweicloud.com/openjdk/17/openjdk-17_windows-x64_bin.zip");
-    zipMap_[L"17"].push_back(L"https://mirrors.huaweicloud.com/openjdk/17.0.1/openjdk-17.0.1_windows-x64_bin.zip");
-    zipMap_[L"17"].push_back(L"https://mirrors.huaweicloud.com/openjdk/17.0.2/openjdk-17.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"18"].push_back(L"https://mirrors.huaweicloud.com/openjdk/18/openjdk-18_windows-x64_bin.zip");
-    zipMap_[L"18"].push_back(L"https://mirrors.huaweicloud.com/openjdk/18.0.1/openjdk-18.0.1_windows-x64_bin.zip");
-    zipMap_[L"18"].push_back(L"https://mirrors.huaweicloud.com/openjdk/18.0.1.1/openjdk-18.0.1.1_windows-x64_bin.zip");
-    zipMap_[L"18"].push_back(L"https://mirrors.huaweicloud.com/openjdk/18.0.2/openjdk-18.0.2_windows-x64_bin.zip");
-    zipMap_[L"18"].push_back(L"https://mirrors.huaweicloud.com/openjdk/18.0.2.1/openjdk-18.0.2.1_windows-x64_bin.zip");
-
-    zipMap_[L"19"].push_back(L"https://mirrors.huaweicloud.com/openjdk/19/openjdk-19_windows-x64_bin.zip");
-    zipMap_[L"19"].push_back(L"https://mirrors.huaweicloud.com/openjdk/19.0.1/openjdk-19.0.1_windows-x64_bin.zip");
-    zipMap_[L"19"].push_back(L"https://mirrors.huaweicloud.com/openjdk/19.0.2/openjdk-19.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"20"].push_back(L"https://mirrors.huaweicloud.com/openjdk/20/openjdk-20_windows-x64_bin.zip");
-    zipMap_[L"20"].push_back(L"https://mirrors.huaweicloud.com/openjdk/20.0.1/openjdk-20.0.1_windows-x64_bin.zip");
-    zipMap_[L"20"].push_back(L"https://mirrors.huaweicloud.com/openjdk/20.0.2/openjdk-20.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"21"].push_back(L"https://mirrors.huaweicloud.com/openjdk/21/openjdk-21_windows-x64_bin.zip");
-    zipMap_[L"21"].push_back(L"https://mirrors.huaweicloud.com/openjdk/21.0.1/openjdk-21.0.1_windows-x64_bin.zip");
-    zipMap_[L"21"].push_back(L"https://mirrors.huaweicloud.com/openjdk/21.0.2/openjdk-21.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"22"].push_back(L"https://mirrors.huaweicloud.com/openjdk/22/openjdk-22_windows-x64_bin.zip");
-    zipMap_[L"22"].push_back(L"https://mirrors.huaweicloud.com/openjdk/22.0.1/openjdk-22.0.1_windows-x64_bin.zip");
-    zipMap_[L"22"].push_back(L"https://mirrors.huaweicloud.com/openjdk/22.0.2/openjdk-22.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"23"].push_back(L"https://mirrors.huaweicloud.com/openjdk/23/openjdk-23_windows-x64_bin.zip");
-    zipMap_[L"23"].push_back(L"https://mirrors.huaweicloud.com/openjdk/23.0.1/openjdk-23.0.1_windows-x64_bin.zip");
-    zipMap_[L"23"].push_back(L"https://mirrors.huaweicloud.com/openjdk/23.0.2/openjdk-23.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"24"].push_back(L"https://mirrors.huaweicloud.com/openjdk/24/openjdk-24_windows-x64_bin.zip");
-    zipMap_[L"24"].push_back(L"https://mirrors.huaweicloud.com/openjdk/24.0.1/openjdk-24.0.1_windows-x64_bin.zip");
-    zipMap_[L"24"].push_back(L"https://mirrors.huaweicloud.com/openjdk/24.0.2/openjdk-24.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"25"].push_back(L"https://mirrors.huaweicloud.com/openjdk/25/openjdk-25_windows-x64_bin.zip");
-    zipMap_[L"25"].push_back(L"https://mirrors.huaweicloud.com/openjdk/25.0.1/openjdk-25.0.1_windows-x64_bin.zip");
-    zipMap_[L"25"].push_back(L"https://mirrors.huaweicloud.com/openjdk/25.0.2/openjdk-25.0.2_windows-x64_bin.zip");
-
-    zipMap_[L"26"].push_back(L"https://mirrors.huaweicloud.com/openjdk/26/openjdk-26_windows-x64_bin.zip");
-    zipMap_[L"26"].push_back(L"https://mirrors.huaweicloud.com/openjdk/26.0.1/openjdk-26.0.1_windows-x64_bin.zip");
-
-    // ---- EXE 源 ----
-    // 来自您的 jdk_exe_repo.txt
-    exeMap_[L"6"].push_back(L"https://repo.huaweicloud.com/java/jdk/6u45-b06/jdk-6u45-windows-x64.exe");
-    exeMap_[L"7"].push_back(L"https://repo.huaweicloud.com/java/jdk/7u80-b15/jdk-7u80-windows-x64.exe");
-    exeMap_[L"8"].push_back(L"https://repo.huaweicloud.com/java/jdk/8u202-b08/jdk-8u202-windows-x64.exe");
-    exeMap_[L"9"].push_back(L"https://repo.huaweicloud.com/java/jdk/9.0.1+11/jdk-9.0.1_windows-x64_bin.exe");
-    exeMap_[L"10"].push_back(L"https://repo.huaweicloud.com/java/jdk/10.0.2+13/jdk-10.0.2_windows-x64_bin.exe");
-    exeMap_[L"11"].push_back(L"https://repo.huaweicloud.com/java/jdk/11.0.2+9/jdk-11.0.2_windows-x64_bin.exe");
-    exeMap_[L"12"].push_back(L"https://repo.huaweicloud.com/java/jdk/12.0.2+10/jdk-12.0.2_windows-x64_bin.exe");
-    exeMap_[L"13"].push_back(L"https://repo.huaweicloud.com/java/jdk/13+33/jdk-13_windows-x64_bin.exe");
-}
-
-// ---------- 源列表（内置在前、外部追加；空列表表示该版本无此类型源） ----------
-const JdkDownloadService::UrlList& JdkDownloadService::zipUrlsFor(const std::wstring& version) {
-    static const UrlList kEmpty;
-    const auto it = zipMap_.find(version);
-    return it == zipMap_.end() ? kEmpty : it->second;
-}
-
-const JdkDownloadService::UrlList& JdkDownloadService::exeUrlsFor(const std::wstring& version) {
-    static const UrlList kEmpty;
-    const auto it = exeMap_.find(version);
-    return it == exeMap_.end() ? kEmpty : it->second;
-}
-
-// ---------- 重新加载映射 ----------
-void JdkDownloadService::reloadMappings() {
-    zipMap_.clear();
-    exeMap_.clear();
-
-    // 1. 加载内置映射
-    initBuiltinMappings();
-
-    // 2. 确保外部文件存在（若不存在则从内置生成）
-    ensureExternalMappingFiles();
-
-    // 3. 加载外部映射（追加到内置之后）
-    loadExternalMappings();
-}
-
 // ---------- 获取安装根目录 ----------
 static std::wstring GetInstallRoot() {
     std::vector<wchar_t> drives = { L'D', L'E', L'F', L'G', L'H', L'I', L'J', L'K', L'L', L'M',
@@ -638,11 +444,50 @@ static std::wstring GetInstallRoot() {
 }
 
 // ---------- 获取官方下载信息 ----------
-bool JdkDownloadService::officialDownloadInfo(const std::wstring& version, std::wstring& outFinalUrl, std::wstring& outFileName) {
-    std::wstring apiUrl = L"https://api.adoptium.net/v3/binary/latest/" + version +
-                          L"/ga/windows/x64/jdk/hotspot/normal/eclipse";
+// 取 needle 之后第一个 delim 包裹的值：extractDelimited(json, 4, L'"', L'"')
+static std::wstring extractDelimited(const std::wstring& text, size_t from,
+                                     wchar_t open, wchar_t close) {
+    const size_t start = text.find(open, from);
+    if (start == std::wstring::npos) return L"";
+    const size_t end = text.find(close, start + 1);
+    if (end == std::wstring::npos) return L"";
+    return text.substr(start + 1, end - start - 1);
+}
 
-    HINTERNET hSession = WinHttpOpen(L"JMT/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+// 在 Adoptium assets JSON 里找想要的产物文件名（优先 zip，其次 msi），并顺带取出它的 link。
+// JSON 里每个 package 形如 {"link":"...","name":"OpenJDK17U-jdk_x64_windows_hotspot_17.0.20.1_1.zip",...}，
+// 所以按 "name" 定位以兼容字段顺序变化，再向回找同一条目里的 link。
+static bool findFileNameInJson(const std::wstring& json, const std::wstring& version,
+                               std::wstring& outName, std::wstring& outLink) {
+    for (const wchar_t* ext : {L".zip", L".msi"}) {
+        for (size_t pos = json.find(L"\"name\""); pos != std::wstring::npos;
+             pos = json.find(L"\"name\"", pos + 1)) {
+            const std::wstring name = extractDelimited(json, pos + 6, L'"', L'"');
+            if (name.empty() || name.find(ext) == std::wstring::npos) continue;
+            // 请求了完整版本（17.0.2）时，优先挑文件名里带该版本串的产物
+            if (!version.empty() && name.find(version) == std::wstring::npos) continue;
+            // 同一条目里的 link 出现在 name 之前，向回搜索
+            const size_t linkPos = json.rfind(L"\"link\"", pos);
+            if (linkPos == std::wstring::npos) continue;
+            outLink = extractDelimited(json, linkPos + 6, L'"', L'"');
+            outName = name;
+            return true;
+        }
+    }
+    return false;
+}
+
+// 向 Adoptium 官方 API 问这个版本的产物信息（权威文件名 + 官方直链）
+bool JdkDownloadService::officialDownloadInfo(const std::wstring& version,
+                                              std::wstring& outFileName,
+                                              std::wstring& outDirectUrl) {
+    // 用 assets 接口而不是 binary/installer 的 307 重定向：
+    // 它直接返回 name 与 link，既拿得到权威文件名（用于拼镜像链接），
+    // 又同时列出 .zip 与 .msi，不必再手工跟重定向（此前的实现还漏掉了查询串里的文件名）。
+    const std::wstring apiUrl = L"https://api.adoptium.net/v3/assets/latest/" + version +
+                                L"/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse";
+
+    HINTERNET hSession = WinHttpOpen(kJmtUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return false;
 
@@ -666,7 +511,7 @@ bool JdkDownloadService::officialDownloadInfo(const std::wstring& version, std::
         return false;
     }
 
-    DWORD flags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+    const DWORD flags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", urlPath, nullptr,
                                             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hRequest) {
@@ -675,451 +520,430 @@ bool JdkDownloadService::officialDownloadInfo(const std::wstring& version, std::
         return false;
     }
 
-    // 禁用自动重定向，手动处理
-    DWORD disableRedirects = WINHTTP_DISABLE_REDIRECTS;
-    WinHttpSetOption(hRequest, WINHTTP_OPTION_DISABLE_FEATURE, &disableRedirects, sizeof(disableRedirects));
-
-    // 设置超时（可选）
-    DWORD timeout = 30000; // 30秒
+    DWORD timeout = 30000;
     WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
 
-    if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(hRequest, nullptr)) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return false;
+    // 跟随重定向 + 显式要求 JSON：否则部分网络环境会返回 HTML
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+    WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
+    const wchar_t* acceptHeader = L"Accept: application/json";
+    bool ok = WinHttpSendRequest(hRequest, acceptHeader, static_cast<DWORD>(wcslen(acceptHeader)),
+                                 WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+              WinHttpReceiveResponse(hRequest, nullptr);
+
+    std::string body;
+    if (ok) {
+        DWORD available = 0;
+        do {
+            available = 0;
+            if (!WinHttpQueryDataAvailable(hRequest, &available)) break;
+            if (available == 0) break;
+            std::string chunk(available, '\0');
+            DWORD read = 0;
+            if (!WinHttpReadData(hRequest, chunk.data(), available, &read) || read == 0) break;
+            chunk.resize(read);
+            body += chunk;
+        } while (available > 0);
     }
-
-    // 检查状态码
-    DWORD statusCode = 0;
-    DWORD size = sizeof(statusCode);
-    if (!WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                             WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size, nullptr)) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    if (statusCode < 300 || statusCode >= 400) {
-        out_.line(OutputLevel::Debug, L"GetOfficialDownloadInfo: 状态码非重定向 " + std::to_wstring(statusCode));
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    // 获取 Location 头
-    wchar_t location[2048] = {0};
-    size = sizeof(location);
-    if (!WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_LOCATION,
-                             WINHTTP_HEADER_NAME_BY_INDEX, location, &size, nullptr)) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    std::wstring url = location;
-    url.erase(std::remove_if(url.begin(), url.end(),
-                             [](wchar_t ch) { return ch <= 0x20; }), url.end());
-
-    if (url.empty()) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return false;
-    }
-
-    // 提取文件名
-    size_t pos = url.find_last_of(L'/');
-    if (pos != std::wstring::npos) {
-        outFileName = url.substr(pos + 1);
-        size_t qpos = outFileName.find(L'?');
-        if (qpos != std::wstring::npos) outFileName = outFileName.substr(0, qpos);
-    } else {
-        outFileName = L"";
-    }
-
-    outFinalUrl = url;
 
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
-    return true;
+
+    if (body.empty()) {
+        out_.line(OutputLevel::Debug, L"OfficialDownloadInfo: 未取到 API 响应");
+        return false;
+    }
+
+    // UTF-8 → 宽字符（文件名是 ASCII，链接也是 ASCII，直接转换即可）
+    const int wideLen = MultiByteToWideChar(CP_UTF8, 0, body.c_str(), static_cast<int>(body.size()), nullptr, 0);
+    if (wideLen <= 0) return false;
+    std::wstring json(static_cast<size_t>(wideLen), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, body.c_str(), static_cast<int>(body.size()), json.data(), wideLen);
+
+    if (!findFileNameInJson(json, version, outFileName, outDirectUrl)) {
+        // 完整版本（17.0.2）在 latest 接口里通常没有对应产物：退化为不限定版本来匹配
+        if (!findFileNameInJson(json, L"", outFileName, outDirectUrl)) {
+            out_.line(OutputLevel::Debug, L"OfficialDownloadInfo: 响应里没有 zip/msi 产物");
+            return false;
+        }
+    }
+    return !outFileName.empty();
+}
+
+// 轻量探测一个候选链接：Range 取文件头 4 字节，用「Content-Type + 魔数」判真假。
+// 必要性：部分镜像对不存在的文件返回 HTTP 200 + text/html 的浏览器校验页
+// （实测中科大），只看状态码会把假页面当成功，白下 100+MB。
+JdkDownloadService::ProbeResult JdkDownloadService::probeUrl(const std::wstring& url, bool wantZip) {
+    lastProbeLength_ = 0;
+
+    wchar_t curlPath[MAX_PATH];
+    DWORD len = SearchPathW(nullptr, L"curl.exe", nullptr, MAX_PATH, curlPath, nullptr);
+    if (len == 0) {
+        wcscpy_s(curlPath, L"C:\\Windows\\System32\\curl.exe");
+        if (!IsFile(curlPath)) return ProbeResult::Empty;
+    }
+
+    const std::wstring headFile = tempDownloadPath(L"probe", url);
+    DeleteFileW(headFile.c_str());
+
+    const std::wstring cmdLine = L"\"" + std::wstring(curlPath) + L"\" -sL --max-time 30"
+                                 L" -r 0-3 -A \"" + kJmtUserAgent + L"\""
+                                 L" -o \"" + headFile + L"\" \"" + url + L"\""
+                                 L" -w \"%{http_code}|%{content_type}|%{size_download}\"";
+
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.bInheritHandle = TRUE;
+    HANDLE readEnd = nullptr;
+    HANDLE writeEnd = nullptr;
+    if (!CreatePipe(&readEnd, &writeEnd, &attributes, 4096)) return ProbeResult::Empty;
+    SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si = { sizeof(STARTUPINFOW) };
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = writeEnd;
+    si.hStdError = writeEnd;
+    si.hStdInput = nullptr;
+
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, (LPWSTR)cmdLine.c_str(), nullptr, nullptr, TRUE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(readEnd);
+        CloseHandle(writeEnd);
+        return ProbeResult::Empty;
+    }
+    CloseHandle(writeEnd);
+
+    std::string captured;
+    char buffer[512];
+    DWORD read = 0;
+    // 探测响应只有一行 -w 输出（约几十字节），远小于管道缓冲，等进程退出后再读不会死锁
+    WaitForSingleObject(pi.hProcess, 60000);
+    while (ReadFile(readEnd, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+        captured.append(buffer, read);
+    }
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(readEnd);
+
+    // 解析 -w 输出：http_code|content_type|size_download
+    int httpStatus = 0;
+    bool sawHtml = false;
+    {
+        std::string line = captured;
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+        const size_t lastBreak = line.find_last_of('\n');
+        if (lastBreak != std::string::npos) line = line.substr(lastBreak + 1);
+        const size_t firstBar = line.find('|');
+        const size_t secondBar = firstBar == std::string::npos ? std::string::npos : line.find('|', firstBar + 1);
+        if (firstBar != std::string::npos) {
+            try { httpStatus = std::stoi(line.substr(0, firstBar)); } catch (...) { httpStatus = 0; }
+        }
+        if (firstBar != std::string::npos && secondBar != std::string::npos) {
+            std::string type = line.substr(firstBar + 1, secondBar - firstBar - 1);
+            std::transform(type.begin(), type.end(), type.begin(),
+                           [](unsigned char ch) { return static_cast<char>(::tolower(ch)); });
+            sawHtml = type.find("html") != std::string::npos;
+        }
+    }
+
+    if (exitCode != 0 || httpStatus < 200 || httpStatus >= 300) {
+        DeleteFileW(headFile.c_str());
+        out_.line(OutputLevel::Debug, L"探测失败（HTTP " + std::to_wstring(httpStatus) + L"）: " + url);
+        return ProbeResult::Empty;
+    }
+
+    HANDLE hFile = CreateFileW(headFile.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return ProbeResult::Empty;
+    BYTE magic[4] = {0};
+    DWORD magicRead = 0;
+    const BOOL magicOk = ReadFile(hFile, magic, 4, &magicRead, nullptr);
+    LARGE_INTEGER fileSize{};
+    GetFileSizeEx(hFile, &fileSize);
+    CloseHandle(hFile);
+    DeleteFileW(headFile.c_str());
+    lastProbeLength_ = fileSize.QuadPart;
+
+    if (!magicOk || magicRead < 2) return ProbeResult::Empty;
+    if (sawHtml) return ProbeResult::Html;   // 浏览器校验页 / 错误页
+    const bool isZipMagic = (magic[0] == 0x50 && magic[1] == 0x4B);
+    const bool isMzMagic = (magic[0] == 0x4D && magic[1] == 0x5A);
+    if (wantZip) return isZipMagic ? ProbeResult::Zip : ProbeResult::Html;
+    return isMzMagic ? ProbeResult::Installer : ProbeResult::Html;
+}
+
+// 安装包（MSI / EXE）都是以 MZ 开头的 PE 文件
+bool JdkDownloadService::isValidInstallerFile(const std::wstring& path) {
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+    BYTE buffer[2] = {0};
+    DWORD read = 0;
+    const BOOL ok = ReadFile(hFile, buffer, 2, &read, nullptr);
+    CloseHandle(hFile);
+    if (!ok || read != 2) return false;
+    return buffer[0] == 0x4D && buffer[1] == 0x5A;   // "MZ"
 }
 
 // ============================================================
-// ========== 公共接口（使用新的映射逻辑） ====================
+// ========== 下载与安装主流程 =================================
 // ============================================================
 
-std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version,
-                                                    const std::wstring& installRoot,
-                                                    int preferredSource) {
-    return executePlan(DownloadPlan::build(DownloadMode::Default, false,
-                                           filterUrlsForVersion(zipUrlsFor(version), version),
-                                           filterUrlsForVersion(exeUrlsFor(version), version)),
-                       version, installRoot, preferredSource);
-}
+std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version) {
+    const JavaVersion parsed = JavaVersion::parse(version);
+    const std::wstring majorVersion = parsed.valid() ? std::to_wstring(parsed.feature) : version;
+    out_.line(OutputLevel::Info, L"目标版本: " + majorVersion);
 
-std::wstring JdkDownloadService::downloadFromMirror(const std::wstring& version,
-                                                    const std::wstring& installRoot,
-                                                    int preferredSource) {
-    return executePlan(DownloadPlan::build(DownloadMode::MirrorOnly, false,
-                                           filterUrlsForVersion(zipUrlsFor(version), version),
-                                           filterUrlsForVersion(exeUrlsFor(version), version)),
-                       version, installRoot, preferredSource);
-}
-
-void JdkDownloadService::ensureExternalMappingFiles() {
-    std::wstring repoDir = repoDirectory();   // 返回 exeDir/.repo
-
-    // 创建 .repo 目录（如果不存在）
-    if (!IsDirectory(repoDir)) {
-        if (!CreateDirectoryW(repoDir.c_str(), nullptr)) {
-            out_.line(OutputLevel::Debug, L"无法创建 .repo 目录: " + repoDir);
-            return;
-        }
+    if (!hasZipCandidate(majorVersion) && !hasManualInstaller(majorVersion)) {
+        out_.line(OutputLevel::Error, L"没有可用于 Java " + majorVersion + L" 的下载源");
+        out_.line(OutputLevel::Info, L"可下载的版本：6~10（安装程序，手动安装）/ 8、11、16 及以上（ZIP，自动安装）/ 12~26（华为云 GA 包）");
+        return L"";
     }
 
-    // 检测文件是否为 UTF-16 LE 编码（老版本遗留问题），是则删除重建
-    auto checkAndFixEncoding = [this](const std::wstring& path) {
-        if (!IsFile(path)) return;
-        HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE) return;
-        BYTE bom[2] = {0};
-        DWORD read = 0;
-        if (ReadFile(hFile, bom, 2, &read, nullptr) && read == 2) {
-            if (bom[0] == 0xFF && bom[1] == 0xFE) {
-                CloseHandle(hFile);
-                hFile = INVALID_HANDLE_VALUE;
-                DeleteFileW(path.c_str());
-                out_.line(OutputLevel::Debug, L"检测到 UTF-16 LE 编码，已删除并准备重建: " + path);
-                return;
-            }
-        }
-        if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
-    };
+    // 第 1 步：问 Adoptium metadata。拿到的文件名用于拼 Adoptium 镜像的链接，直链作为官方源。
+    // 老版本（6~10）官方没有产物，这一步会失败，但不影响旧库 EXE 源可用。
+    std::wstring fileName;
+    std::wstring directUrl;
+    const bool haveMeta = officialDownloadInfo(majorVersion, fileName, directUrl);
 
-    // ---------- 处理 ZIP 映射文件 ----------
-    std::wstring zipFilePath = JoinPath(repoDir, L"jdk_zip_repo.txt");
-    checkAndFixEncoding(zipFilePath);
-    if (!IsFile(zipFilePath)) {
-        std::wstring content;
-        content += L"# JDK ZIP mirror list\n";
-        content += L"# One URL per line. Lines starting with # are comments.\n";
-        content += L"# Version number is auto-extracted from URL (major version).\n";
-        content += L"# Example: https://mirrors.huaweicloud.com/openjdk/17/openjdk-17_windows-x64_bin.zip\n";
-        content += L"#          -> recognized as version 17\n\n";
-
-        for (const auto& [ver, urls] : zipMap_) {
-            for (const auto& url : urls) {
-                content += url + L"\n";
-            }
-        }
-
-        if (!WriteFileText(zipFilePath, content)) {
-            out_.line(OutputLevel::Debug, L"写入 ZIP 映射文件失败: " + zipFilePath);
-        } else {
-            out_.line(OutputLevel::Debug, L"已生成 ZIP 映射文件: " + zipFilePath);
-        }
+    // 第 2 步：构建候选源列表
+    DownloadPlan plan;
+    if (!buildDownloadPlan(majorVersion, haveMeta ? fileName : L"",
+                           haveMeta ? directUrl : L"", plan)) {
+        out_.line(OutputLevel::Error, L"没有可用于 Java " + majorVersion + L" 的下载源");
+        return L"";
     }
 
-    // ---------- 处理 EXE 映射文件 ----------
-    std::wstring exeFilePath = JoinPath(repoDir, L"jdk_exe_repo.txt");
-    checkAndFixEncoding(exeFilePath);
-    if (!IsFile(exeFilePath)) {
-        std::wstring content;
-        content += L"# JDK EXE installer list\n";
-        content += L"# One URL per line. Lines starting with # are comments.\n";
-        content += L"# Version number is auto-extracted from URL (major version).\n";
-        content += L"# Example: https://repo.huaweicloud.com/java/jdk/8u202-b08/jdk-8u202-windows-x64.exe\n";
-        content += L"#          -> recognized as version 8\n\n";
+    // 列出可用源，让用户在交互式终端里选择（回车默认第 1 个）
+    const int preferred = chooseSource(plan, majorVersion);
 
-        for (const auto& [ver, urls] : exeMap_) {
-            for (const auto& url : urls) {
-                content += url + L"\n";
-            }
-        }
-
-        if (!WriteFileText(exeFilePath, content)) {
-            out_.line(OutputLevel::Debug, L"写入 EXE 映射文件失败: " + exeFilePath);
-        } else {
-            out_.line(OutputLevel::Debug, L"已生成 EXE 映射文件: " + exeFilePath);
-        }
-    }
-}
-
-std::wstring JdkDownloadService::downloadFromOfficial(const std::wstring& version,
-                                                      const std::wstring& installRoot,
-                                                      int preferredSource) {
-    return executePlan(DownloadPlan::build(DownloadMode::OfficialOnly, false, {}, {}),
-                       version, installRoot, preferredSource);
-}
-
-std::wstring JdkDownloadService::downloadInstallerOnly(const std::wstring& version, int preferredSource) {
-    return executePlan(DownloadPlan::build(DownloadMode::Default, true, {},
-                                           filterUrlsForVersion(exeUrlsFor(version), version)),
-                       version, L"", preferredSource);
-}
-
-// ============================================================
-// ========== 计划执行 =========================================
-// ============================================================
-
-// 给每个步骤算出它属于第几个源（按首次出现的顺序编号，1 起）
-static std::vector<int> stepSourceIndexes(const std::vector<DownloadStep>& steps) {
-    std::vector<int> indexes;
-    std::map<std::wstring, int> seen;
-    for (const auto& step : steps) {
-        const std::wstring key = sourceKey(step.url);
-        const auto it = seen.find(key);
-        if (it == seen.end()) {
-            const int index = static_cast<int>(seen.size()) + 1;
-            seen[key] = index;
-            indexes.push_back(index);
-        } else {
-            indexes.push_back(it->second);
-        }
-    }
-    return indexes;
-}
-
-std::vector<JdkDownloadService::SourceOption> JdkDownloadService::listSources(const std::wstring& version,
-                                                                              DownloadMode mode,
-                                                                              bool installerOnly) {
-    const DownloadPlan plan = DownloadPlan::build(
-            mode, installerOnly,
-            filterUrlsForVersion(zipUrlsFor(version), version),
-            filterUrlsForVersion(exeUrlsFor(version), version));
-
-    std::vector<SourceOption> sources;
-    const std::vector<int> indexes = stepSourceIndexes(plan.steps);
-    for (size_t i = 0; i < plan.steps.size(); ++i) {
-        const int index = indexes[i];
-        if (index > static_cast<int>(sources.size())) {
-            SourceOption option;
-            option.index = index;
-            option.url = plan.steps[i].url;
-            option.official = plan.steps[i].url.empty();
-            option.name = sourceDisplayName(plan.steps[i].url);
-            sources.push_back(option);
-        }
-        sources[static_cast<size_t>(index) - 1].candidateCount++;
-    }
-    return sources;
-}
-
-std::wstring JdkDownloadService::executePlan(const DownloadPlan& plan,
-                                             const std::wstring& version,
-                                             const std::wstring& installRoot,
-                                             int preferredSource) {
-    const std::wstring root = installRoot.empty() ? GetInstallRoot() : installRoot;
-    const std::wstring targetDir = JoinPath(root, L"jdk-" + version);
-
+    const std::wstring root = GetInstallRoot();
+    const std::wstring targetDir = JoinPath(root, L"jdk-" + majorVersion);
     if (IsDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-        out_.line(OutputLevel::Info, L"JDK " + version + L" 已安装在 " + targetDir);
+        out_.line(OutputLevel::Info, L"JDK " + majorVersion + L" 已安装在 " + targetDir);
         return targetDir;
     }
 
-    // 交互式选源：把用户选中的源排到最前（其余源仍作为后备，避免所选源临时不可用就整体失败）
-    std::vector<DownloadStep> steps = plan.steps;
-    if (preferredSource > 0) {
-        std::vector<DownloadStep> preferred;
-        std::vector<DownloadStep> others;
-        const std::vector<int> indexes = stepSourceIndexes(steps);
-        for (size_t i = 0; i < steps.size(); ++i) {
-            (indexes[i] == preferredSource ? preferred : others).push_back(steps[i]);
-        }
-        steps.clear();
-        steps.insert(steps.end(), preferred.begin(), preferred.end());
-        steps.insert(steps.end(), others.begin(), others.end());
+    // 所选源排到最前，其余仍作为后备（避免所选源临时不可用就整体失败）
+    std::vector<DownloadSource> ordered = plan.sources;
+    if (preferred >= 1 && preferred <= static_cast<int>(ordered.size())) {
+        std::rotate(ordered.begin(), ordered.begin() + (preferred - 1), ordered.end());
     }
 
-    // demo 包直接跳过（此前只提示但仍然下载）
-    for (const auto& demoUrl : plan.skippedDemoUrls) {
-        out_.line(OutputLevel::Warning, L"已跳过 DEMO 包（仅含示例代码）: " + demoUrl);
-    }
-
-    if (steps.empty()) {
-        out_.line(OutputLevel::Error,
-                  plan.installerOnly
-                          ? L"版本 " + version + L" 没有可下载的 EXE 安装包"
-                          : L"没有可用于版本 " + version + L" 的下载源");
-        return L"";
-    }
-
-    for (size_t i = 0; i < steps.size(); ++i) {
+    // 第 3 步：按源逐个尝试。ZIP 会自动解压安装；只有安装包时提示手动安装。
+    size_t index = 0;
+    bool triedAnyExe = false;
+    for (const auto& source : ordered) {
+        ++index;
         if (globalCancelState().cancelled()) {
-            out_.line(OutputLevel::Warning, L"下载已取消，停止尝试其余源");
+            out_.line(OutputLevel::Warning, L"下载已取消");
             return L"";
         }
-        const DownloadStep& step = steps[i];
-        const std::wstring order = L"（源 " + std::to_wstring(i + 1) + L"/" +
-                                   std::to_wstring(steps.size()) + L"）";
+        const std::wstring order = L"（源 " + std::to_wstring(index) + L"/" +
+                                   std::to_wstring(ordered.size()) + L"）";
+        out_.line(OutputLevel::Info, L"尝试源" + order + L"：" + source.name);
 
-        // 镜像友好：被临时拉黑的主机直接跳过，不再产生任何请求
-        if (!step.url.empty() && throttle_.isHostBlocked(HostThrottle::hostOf(step.url))) {
-            out_.line(OutputLevel::Warning, L"跳过源" + order + L"：主机 " +
-                                            HostThrottle::hostOf(step.url) + L" 因限速/拒绝访问被临时拉黑");
-            continue;
-        }
+        for (const auto& step : source.steps) {
+            if (globalCancelState().cancelled()) break;
 
-        // 打印本次尝试的源名与下载链接（官方源的链接在运行时解析）
-        const std::wstring sourceName = sourceDisplayName(step.url);
-        out_.line(OutputLevel::Info, L"尝试源" + order + L"：" + sourceName);
-        if (!step.url.empty()) {
-            out_.line(OutputLevel::Info, L"下载链接：" + step.url);
-        }
-
-        switch (step.kind) {
-            case DownloadStepKind::MirrorZip:
-                if (tryZipSource(step.url, version, targetDir)) {
-                    if (versionSatisfied(targetDir, version)) {
-                        return targetDir;
-                    }
-                }
-                break;
-            case DownloadStepKind::MirrorExe: {
-                const std::wstring exeResult = tryExeSource(step.url, version, targetDir);
-                if (exeResult == L"EXE_DOWNLOADED") {
-                    return exeResult;
-                }
-                break;
+            const std::wstring host = HostThrottle::hostOf(step.url);
+            if (throttle_.isHostBlocked(host)) {
+                out_.line(OutputLevel::Warning, L"跳过：主机 " + host + L" 因限速/拒绝访问被临时拉黑");
+                continue;
             }
-            case DownloadStepKind::OfficialZip:
-                if (tryOfficialZip(version, targetDir)) {
-                    if (versionSatisfied(targetDir, version)) {
-                        return targetDir;
-                    }
+            out_.line(OutputLevel::Info, L"下载链接：" + step.url);
+
+            if (step.kind == DownloadStepKind::Zip) {
+                if (tryZipStep(step, majorVersion, targetDir) && versionSatisfied(targetDir, majorVersion)) {
+                    return targetDir;
                 }
-                break;
+            } else {
+                triedAnyExe = true;
+                std::wstring downloaded;
+                if (tryManualStep(step, majorVersion, downloaded)) {
+                    out_.line(OutputLevel::Warning, L"提示：请手动运行此安装程序安装 JDK " +
+                                                    majorVersion + L"，然后运行 'jmt search' 刷新缓存");
+                    out_.line(OutputLevel::Info, L"建议安装路径: " + targetDir);
+                    return L"EXE_DOWNLOADED";
+                }
+            }
         }
     }
 
-    out_.line(OutputLevel::Error, L"所有下载源均失败，版本 " + version + L" 未安装");
-    out_.line(OutputLevel::Info, L"本次共发出 " + std::to_wstring(throttle_.totalRequests()) +
-                                 L" 次请求（预算 " + std::to_wstring(throttle_.policy().maxRequestsTotal) +
-                                 L" 次）；已按镜像友好策略限速与退避");
-    const std::vector<std::wstring> blocked = throttle_.blockedHosts();
-    if (!blocked.empty()) {
-        std::wstring list;
-        for (const auto& host : blocked) {
-            if (!list.empty()) list += L", ";
-            list += host;
-        }
-        out_.line(OutputLevel::Warning, L"以下主机已被临时拉黑（稍后自动恢复）: " + list);
+    out_.line(OutputLevel::Error, L"所有下载源均失败，版本 " + majorVersion + L" 未安装");
+    if (!triedAnyExe) {
+        out_.line(OutputLevel::Info, L"提示：该版本没有可自动安装的压缩包，也没有可用的安装程序");
     }
+    out_.line(OutputLevel::Info, L"本次共发出 " + std::to_wstring(throttle_.totalRequests()) +
+                                 L" 次请求（预算 " + std::to_wstring(throttle_.policy().maxRequestsTotal) + L" 次）");
     return L"";
 }
 
-bool JdkDownloadService::tryZipSource(const std::wstring& url, const std::wstring& version,
-                                      const std::wstring& targetDir) {
-    const std::wstring tempFile = tempDownloadPath(L"zip", url);
-    out_.line(OutputLevel::Info, L"正在下载 JDK " + version + L"（ZIP）...");
+// 列出可用源并让用户选择。
+// 返回 1 起的源编号；回车（空输入）= 1；非交互环境返回 0 表示按顺序自动尝试全部。
+int JdkDownloadService::chooseSource(const DownloadPlan& plan, const std::wstring& version) {
+    if (plan.sources.empty()) {
+        return 0;
+    }
+
+    size_t totalSteps = 0;
+    for (const auto& source : plan.sources) {
+        totalSteps += source.steps.size();
+    }
+
+    out_.blank();
+    out_.line(OutputLevel::Info, L"查找到可用源：" + std::to_wstring(plan.sources.size()) + L"（候选链接共 " +
+                                 std::to_wstring(totalSteps) + L" 条）");
+    out_.blank();
+    out_.line(OutputLevel::Info, L"请选择要使用的源：");
+    for (size_t i = 0; i < plan.sources.size(); ++i) {
+        const auto& source = plan.sources[i];
+        std::wstring line = L"             " + std::to_wstring(i + 1) + L". " + source.name;
+        if (source.isOfficial) {
+            line += L" (速度慢)";
+        }
+        // 该源能提供自动安装的 ZIP 时标注出来，便于判断选它是「装好」还是「只下载」
+        bool hasZip = false;
+        bool hasExe = false;
+        for (const auto& step : source.steps) {
+            if (step.kind == DownloadStepKind::Zip) {
+                hasZip = true;
+            } else {
+                hasExe = true;
+            }
+        }
+        if (hasZip) {
+            line += L"（可自动安装）";
+        } else if (hasExe) {
+            line += L"（需手动安装）";
+        }
+        out_.line(OutputLevel::Info, line);
+    }
+    out_.blank();
+
+    // 非交互环境（脚本/管道）不弹提示，按顺序尝试全部源
+    DWORD mode = 0;
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    const bool interactive = input != nullptr && input != INVALID_HANDLE_VALUE &&
+                             GetConsoleMode(input, &mode) != 0;
+    if (!interactive) {
+        out_.line(OutputLevel::Info, L"（非交互环境：按顺序自动尝试全部源）");
+        return 0;
+    }
+
+    out_.line(OutputLevel::Info, L"请输入您选择的源（回车默认选择: 1 ）：");
+    std::wstring input_;
+    std::getline(std::wcin, input_);
+    out_.blank();
+    if (input_.empty()) {
+        return 1;
+    }
+    try {
+        const int choice = std::stoi(input_);
+        if (choice >= 1 && choice <= static_cast<int>(plan.sources.size())) {
+            return choice;
+        }
+    } catch (const std::exception&) {
+        // 落到下面的兜底
+    }
+    out_.line(OutputLevel::Warning, L"输入无效，按顺序自动尝试全部源");
+    return 0;
+}
+
+bool JdkDownloadService::tryZipStep(const DownloadStep& step, const std::wstring& version,
+                                    const std::wstring& targetDir) {
+    // 先探测：避免在「HTTP 200 + text/html 假页面」上白下 100+MB
+    const ProbeResult probe = probeUrl(step.url, true);
+    if (probe != ProbeResult::Zip) {
+        const wchar_t* reason = L"未知原因";
+        switch (probe) {
+            case ProbeResult::Html:     reason = L"返回的是网页而不是文件（镜像校验页或错误页）"; break;
+            case ProbeResult::Empty:    reason = L"请求失败或文件不存在"; break;
+            case ProbeResult::TooSmall: reason = L"文件过小"; break;
+            case ProbeResult::Installer: reason = L"该地址是安装包而不是压缩包"; break;
+            default: break;
+        }
+        out_.line(OutputLevel::Warning, L"  跳过：" + std::wstring(reason));
+        return false;
+    }
+    out_.line(OutputLevel::Info, L"  探测通过（ZIP），开始下载...");
+
+    const std::wstring tempFile = tempDownloadPath(L"zip", step.url);
     int httpStatus = 0;
     int64_t downloadedBytes = 0;
     int speedBps = 0;
-    if (!downloadFile(url, tempFile, httpStatus, downloadedBytes, speedBps)) {
-        out_.line(OutputLevel::Warning, L"该 ZIP 源下载失败（HTTP " + std::to_wstring(httpStatus) +
-                                        L"），尝试下一个源...");
+    if (!downloadFile(step.url, tempFile, httpStatus, downloadedBytes, speedBps)) {
+        out_.line(OutputLevel::Warning, L"  下载失败（HTTP " + std::to_wstring(httpStatus) + L"），换下一个源");
         return false;
     }
     out_.line(OutputLevel::Info, L"下载完成: " + ToWideString(curl_output::formatBytes(downloadedBytes)) +
                                  L"，平均 " + ToWideString(curl_output::formatSpeed(speedBps)));
+
+    // 下载后再验一次魔数（防止中途被替换成错误页）
+    if (!isValidZipFile(tempFile)) {
+        out_.line(OutputLevel::Warning, L"  下载到的不是有效 ZIP，换下一个源");
+        DeleteFileW(tempFile.c_str());
+        return false;
+    }
+
     if (!extractZip(tempFile, targetDir)) {
-        out_.line(OutputLevel::Warning, L"解压失败，尝试下一个源...");
+        out_.line(OutputLevel::Warning, L"  解压失败，换下一个源");
         DeleteFileW(tempFile.c_str());
         return false;
     }
     DeleteFileW(tempFile.c_str());
 
     if (JdkScanService::isValidJdk(targetDir)) {
-        out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功");
+        const std::wstring installed = JdkScanService::extractVersion(targetDir);
+        out_.line(OutputLevel::Success, L"JDK " + (installed.empty() ? version : installed) + L" 安装成功");
         return true;
     }
     if (fixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-        out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（修复嵌套结构）");
+        const std::wstring installed = JdkScanService::extractVersion(targetDir);
+        out_.line(OutputLevel::Success,
+                  L"JDK " + (installed.empty() ? version : installed) + L" 安装成功（修复嵌套结构）");
         return true;
     }
-    out_.line(OutputLevel::Warning, L"解压后不是有效的 JDK，尝试下一个源...");
+    out_.line(OutputLevel::Warning, L"  解压后不是有效的 JDK，换下一个源");
     fs::remove_all(targetDir);
     return false;
 }
 
-std::wstring JdkDownloadService::tryExeSource(const std::wstring& url, const std::wstring& version,
-                                              const std::wstring& targetDir) {
-    std::wstring fileName = ExtractFileNameFromUrl(url);
-    if (fileName.empty()) fileName = L"jmt_download.exe";
-    const std::wstring tempFile = JoinPath(tempDirectory(), fileName);
+bool JdkDownloadService::tryManualStep(const DownloadStep& step, const std::wstring& version,
+                                       std::wstring& outDownloadedPath) {
+    const ProbeResult probe = probeUrl(step.url, false);
+    if (probe != ProbeResult::Installer) {
+        out_.line(OutputLevel::Warning, L"跳过 " + step.sourceName + L"：没有可用的安装程序");
+        return false;
+    }
 
+    const std::wstring tempFile = tempDownloadPath(L"exe", step.url);
     out_.line(OutputLevel::Info, L"正在下载 EXE 安装程序...");
+
     int httpStatus = 0;
     int64_t downloadedBytes = 0;
     int speedBps = 0;
-    if (!downloadFile(url, tempFile, httpStatus, downloadedBytes, speedBps)) {
-        out_.line(OutputLevel::Warning, L"该 EXE 源下载失败（HTTP " + std::to_wstring(httpStatus) +
-                                        L"），尝试下一个源...");
-        return L"";
-    }
-    out_.line(OutputLevel::Info, L"下载完成: " + ToWideString(curl_output::formatBytes(downloadedBytes)) +
-                                 L"，平均 " + ToWideString(curl_output::formatSpeed(speedBps)));
-    out_.line(OutputLevel::Info, L"EXE 文件已保存到: " + tempFile);
-    out_.line(OutputLevel::Warning, L"提示：请手动运行此 EXE 安装 JDK " + version + L"，然后运行 'jmt search' 刷新缓存");
-    out_.line(OutputLevel::Info, L"建议安装路径: " + targetDir);
-    return L"EXE_DOWNLOADED";
-}
-
-bool JdkDownloadService::tryOfficialZip(const std::wstring& version, const std::wstring& targetDir) {
-    std::wstring officialUrl;
-    std::wstring fileName;
-    if (!officialDownloadInfo(version, officialUrl, fileName) || fileName.empty()) {
-        out_.line(OutputLevel::Error, L"无法获取官方下载信息，请检查网络或版本号是否正确");
+    if (!downloadFile(step.url, tempFile, httpStatus, downloadedBytes, speedBps)) {
+        out_.line(OutputLevel::Warning, L"  下载失败（HTTP " + std::to_wstring(httpStatus) + L"）");
         return false;
     }
-
-    std::wstring tempFile = JoinPath(tempDirectory(), fileName);
-    if (tempFile.find(L".zip") == std::wstring::npos) {
-        tempFile = tempDownloadPath(L"zip", officialUrl);
-    }
-
-    out_.line(OutputLevel::Info, L"正在从官方源下载 JDK " + version + L" ...");
-    int httpStatus = 0;
-    int64_t downloadedBytes = 0;
-    int speedBps = 0;
-    if (!downloadFile(officialUrl, tempFile, httpStatus, downloadedBytes, speedBps)) {
-        out_.line(OutputLevel::Error, L"官方源下载失败（HTTP " + std::to_wstring(httpStatus) + L"）");
+    if (!isValidInstallerFile(tempFile)) {
+        out_.line(OutputLevel::Warning, L"  下载到的不是有效安装程序");
         DeleteFileW(tempFile.c_str());
         return false;
     }
     out_.line(OutputLevel::Info, L"下载完成: " + ToWideString(curl_output::formatBytes(downloadedBytes)) +
                                  L"，平均 " + ToWideString(curl_output::formatSpeed(speedBps)));
-    if (!extractZip(tempFile, targetDir)) {
-        out_.line(OutputLevel::Error, L"解压失败");
-        DeleteFileW(tempFile.c_str());
-        return false;
-    }
-    DeleteFileW(tempFile.c_str());
-
-    if (JdkScanService::isValidJdk(targetDir)) {
-        out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（官方源）");
-        return true;
-    }
-    if (fixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
-        out_.line(OutputLevel::Success, L"JDK " + version + L" 安装成功（官方源，修复嵌套）");
-        return true;
-    }
-    out_.line(OutputLevel::Error, L"官方源解压后仍不是有效的 JDK，请手动处理");
-    fs::remove_all(targetDir);
-    return false;
+    out_.line(OutputLevel::Info, L"安装程序已保存到: " + tempFile);
+    outDownloadedPath = tempFile;
+    return true;
 }
 
-// ---------- 静态初始化（在 main 中调用） ----------
-// 注意：需要在 main 或程序启动时调用一次 reloadMappings()
-
+// 请求了完整版本时才校验：镜像只保留最新补丁，拿到的补丁号与请求可能不同
 bool JdkDownloadService::versionSatisfied(const std::wstring& targetDir, const std::wstring& requested) {
     if (!JavaVersion::isFullVersionQuery(requested)) {
         return true;   // 只给主版本时不校验具体补丁版本
@@ -1136,3 +960,4 @@ bool JdkDownloadService::versionSatisfied(const std::wstring& targetDir, const s
     fs::remove_all(targetDir);
     return false;
 }
+

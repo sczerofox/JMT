@@ -18,77 +18,6 @@
 
 namespace fs = std::filesystem;
 
-// stdin 是否为真实控制台（重定向/管道时不应弹交互提示，避免脚本挂住）
-static bool isInputInteractive() {
-    DWORD mode = 0;
-    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
-    return input != nullptr && input != INVALID_HANDLE_VALUE && GetConsoleMode(input, &mode) != 0;
-}
-
-// 打印可用源并让用户选择；返回 1 起的源编号（0 = 按顺序自动尝试，-1 = 参数非法）
-static int chooseSource(const std::vector<JdkDownloadService::SourceOption>& sources,
-                        int explicitChoice, IOutput& out) {
-    if (sources.empty()) {
-        // 没有候选源：交给后续流程统一报「没有可用于该版本的下载源」并返回网络/磁盘类退出码，
-        // 保持与「源选择」功能引入之前一致的退出码语义
-        out.line(OutputLevel::Warning, L"该版本没有可用的下载源，将按默认流程尝试");
-        return 0;
-    }
-
-    if (explicitChoice > 0) {
-        if (explicitChoice > static_cast<int>(sources.size())) {
-            out.line(OutputLevel::Error, L"--source 指定的源不存在（可用范围 1~" +
-                                         std::to_wstring(sources.size()) + L"）");
-            return -1;
-        }
-        return explicitChoice;
-    }
-
-    size_t totalLinks = 0;
-    for (const auto& source : sources) {
-        totalLinks += static_cast<size_t>(source.candidateCount);
-    }
-    out.blank();
-    out.line(OutputLevel::Info, L"查找到可用源：" + std::to_wstring(sources.size()) +
-                                 L"（候选链接共 " + std::to_wstring(totalLinks) + L" 条）");
-    out.blank();
-    out.line(OutputLevel::Info, L"请选择要使用的源：");
-    for (const auto& source : sources) {
-        std::wstring line = L"             " + std::to_wstring(source.index) + L". " + source.name;
-        if (source.official) {
-            line += L" (速度慢)";   // 官方源需要先解析重定向，且通常比镜像慢
-        }
-        if (source.candidateCount > 1) {
-            line += L"（" + std::to_wstring(source.candidateCount) + L" 条链接）";
-        }
-        out.line(OutputLevel::Info, line);
-    }
-    out.blank();
-
-    if (!isInputInteractive()) {
-        out.line(OutputLevel::Info, L"（非交互环境：按顺序自动尝试全部源）");
-        return 0;
-    }
-
-    out.line(OutputLevel::Info, L"请输入您选择的源（回车默认选择: 1 ）：");
-    std::wstring input;
-    std::getline(std::wcin, input);
-    out.blank();   // 用户输入后换行（无回显的终端也能保证下一行输出从行首开始）
-    if (input.empty()) {
-        return 1;
-    }
-    try {
-        const int choice = std::stoi(input);
-        if (choice >= 1 && choice <= static_cast<int>(sources.size())) {
-            return choice;
-        }
-    } catch (const std::exception&) {
-        // 落到下面的兜底
-    }
-    out.line(OutputLevel::Warning, L"输入无效，按顺序自动尝试全部源");
-    return 0;
-}
-
 // 辅助：将目录移动到回收站（与 remove 命令复用）
 static bool MoveToTrash(const std::wstring& jdkPath, const std::wstring& version, const std::wstring& exeDir, std::wstring& outTrashPath) {
     if (!IsDirectory(jdkPath)) return false;
@@ -120,48 +49,18 @@ static bool MoveToTrash(const std::wstring& jdkPath, const std::wstring& version
 
 ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
     
-    // ----- 提权 -----
-
     // ----- 参数检查 -----
     if (args.size() < 2) {
         ctx.out->line(OutputLevel::Error, L"请指定版本号，如 download 21");
-        ctx.out->line(OutputLevel::Info, L"可选参数: --mirror  (使用内置镜像加速下载)");
-        ctx.out->line(OutputLevel::Info, L"          exe     (强制下载 EXE 安装程序到 .temp，不自动安装)");
-        ctx.out->line(OutputLevel::Info, L"          java    (使用官方源下载很慢，自动解压安装)");
+        ctx.out->line(OutputLevel::Info, L"能下载到 ZIP 时自动解压安装；只有安装包时下载后提示手动安装");
         return ExitCode::BadArgs;
     }
 
-    // 解析参数
-    bool useMirror = false;
-    bool forceOfficial = false;   // ← 新增标志
-    bool installerOnly = false;   // exe 参数：只下载 EXE 安装包，不自动安装
-    int sourceChoice = 0;         // --source N：直接指定源，不弹交互
+    // 解析参数（现在没有开关：ZIP 优先、安装包兜底由下载服务自动决定）
     std::wstring versionArg;
     for (size_t i = 1; i < args.size(); ++i) {
-        if (args[i] == L"--mirror") {
-            useMirror = true;
-        } else if (args[i] == L"exe") {
-            installerOnly = true;
-        } else if (args[i] == L"java") {
-            forceOfficial = true;
-        } else if (args[i] == L"--source" && i + 1 < args.size()) {
-            try {
-                sourceChoice = std::stoi(args[++i]);
-            } catch (const std::exception&) {
-                ctx.out->line(OutputLevel::Error, L"--source 需要一个数字，例如 --source 2");
-                return ExitCode::BadArgs;
-            }
-        } else if (args[i].rfind(L"--source=", 0) == 0) {
-            try {
-                sourceChoice = std::stoi(args[i].substr(9));
-            } catch (const std::exception&) {
-                ctx.out->line(OutputLevel::Error, L"--source 需要一个数字，例如 --source=2");
-                return ExitCode::BadArgs;
-            }
-        } else {
-            if (versionArg.empty()) {
-                versionArg = args[i];
-            }
+        if (versionArg.empty()) {
+            versionArg = args[i];
         }
     }
 
@@ -177,7 +76,7 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
         return ExitCode::BadArgs;
     }
     const std::wstring version = requested.raw;
-    ctx.out->line(OutputLevel::Info, L"目标版本: " + version);
+    // 目标版本的打印由下载服务统一输出（避免两处各打一遍）
 
     // ----- 检查是否已安装 -----
     // 完整版本请求：精确到补丁版本；只给主版本时：该主版本下任意已安装版本
@@ -253,36 +152,13 @@ ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppCont
     }
 
     // ----- 执行下载 -----
-    std::wstring installPath;
-
-    // 列出可用源并（在交互式终端里）让用户选择；--source N 可直接指定
-    const DownloadMode mode = installerOnly ? DownloadMode::Default
-                                            : (forceOfficial ? DownloadMode::OfficialOnly
-                                                             : (useMirror ? DownloadMode::MirrorOnly
-                                                                          : DownloadMode::Default));
-    const std::vector<JdkDownloadService::SourceOption> sources =
-            ctx.download->listSources(version, mode, installerOnly);
-    const int preferredSource = chooseSource(sources, sourceChoice, *ctx.out);
-    if (preferredSource < 0) {
-        return ExitCode::BadArgs;
-    }
-
-    if (installerOnly) {
-        // exe 参数优先：只下载 EXE 安装包到 .temp，不自动安装
-        installPath = ctx.download->downloadInstallerOnly(version, preferredSource);
-    } else if (forceOfficial) {
-        // 强制从官方下载（绕过镜像和 EXE）
-        installPath = ctx.download->downloadFromOfficial(version, L"", preferredSource);
-    } else if (useMirror) {
-        installPath = ctx.download->downloadFromMirror(version, L"", preferredSource);
-    } else {
-        // 默认：尝试镜像 ZIP，失败则回退官方 ZIP
-        installPath = ctx.download->downloadAndInstall(version, L"", preferredSource);
-    }
+    // 流程由 JdkDownloadService 决定：能下 ZIP 就下 ZIP 并自动安装；
+    // 只有安装包（MSI/EXE）时下载后提示手动安装；源按优先级自动回退。
+    const std::wstring installPath = ctx.download->downloadAndInstall(version);
 
     if (installPath == L"EXE_DOWNLOADED") {
-        ctx.out->line(OutputLevel::Info, L"JDK 安装程序已下载到 .temp 目录，请手动完成安装");
-        ctx.out->line(OutputLevel::Warning,
+        // 详细的手动安装提示已由下载服务打印，这里只提醒清理 .temp
+        ctx.out->line(OutputLevel::Info,
                       L"注意：请定期清理 .temp 文件夹，防止占用磁盘空间（清理命令：remove temp）");
         return ExitCode::Ok;
     }
