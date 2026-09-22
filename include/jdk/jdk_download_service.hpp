@@ -63,8 +63,8 @@ private:
 
     // 列出可用源并让用户选（返回 1 起的编号；回车取 1；非交互环境返回 0 = 按顺序全部尝试）
     int chooseSource(const DownloadPlan& plan);
-    // 完整版本请求时校验安装结果与请求是否一致（不一致则删除并放弃该源）
-    bool versionSatisfied(const std::wstring& targetDir, const std::wstring& requested);
+    // 完整版本请求时核对补丁版本：不一致只提示（镜像通常只有最新补丁），不拒绝安装
+    bool warnIfPatchDiffers(const std::wstring& targetDir, const std::wstring& requested);
 
     int64_t lastProbeLength_ = 0;
 };

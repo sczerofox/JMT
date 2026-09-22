@@ -685,6 +685,9 @@ bool JdkDownloadService::isValidInstallerFile(const std::wstring& path) {
 
 std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version) {
     const JavaVersion parsed = JavaVersion::parse(version);
+    // version 是用户请求的完整写法（可能是 17 / 17.0.2 / 8u202）：
+    // 用它做「装出来的版本是否满足请求」的校验；majorVersion 只用于覆盖面判断与目录名。
+    const std::wstring requested = version;
     const std::wstring majorVersion = parsed.valid() ? std::to_wstring(parsed.feature) : version;
     out_.line(OutputLevel::Info, L"目标版本: " + majorVersion);
 
@@ -748,7 +751,8 @@ std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version)
             out_.line(OutputLevel::Info, L"下载链接：" + step.url);
 
             if (step.kind == DownloadStepKind::Zip) {
-                if (tryZipStep(step, targetDir) && versionSatisfied(targetDir, majorVersion)) {
+                // 用完整请求（而非主版本）核对补丁版本：镜像只保留最新补丁时给出提示
+                if (tryZipStep(step, targetDir) && warnIfPatchDiffers(targetDir, requested)) {
                     return targetDir;
                 }
             } else {
@@ -934,9 +938,14 @@ bool JdkDownloadService::tryManualStep(const DownloadStep& step,
 }
 
 // 请求了完整版本时才校验：镜像只保留最新补丁，拿到的补丁号与请求可能不同
-bool JdkDownloadService::versionSatisfied(const std::wstring& targetDir, const std::wstring& requested) {
+// 请求了完整版本时，核对实际装出来的补丁版本。
+// 这里只「提示」不「拒绝」：镜像每个大版本通常只保留最新补丁（如 17 只有 17.0.20.1），
+// 若把不一致一律判为失败，请求 17.0.2 时所有源都会失败、根本装不上。
+// 所以保留安装结果，但把实际版本明确告知，避免用户以为装到的是所请求的补丁。
+bool JdkDownloadService::warnIfPatchDiffers(const std::wstring& targetDir,
+                                            const std::wstring& requested) {
     if (!JavaVersion::isFullVersionQuery(requested)) {
-        return true;   // 只给主版本时不校验具体补丁版本
+        return true;   // 只给主版本时不涉及具体补丁
     }
     const std::wstring installed = JdkScanService::extractVersion(targetDir);
     if (installed.empty()) {
@@ -946,8 +955,8 @@ bool JdkDownloadService::versionSatisfied(const std::wstring& targetDir, const s
         return true;
     }
     out_.line(OutputLevel::Warning,
-              L"该源提供的是 " + installed + L"，与请求的 " + requested + L" 不一致，放弃该源");
-    fs::remove_all(targetDir);
-    return false;
+              L"该源提供的是 " + installed + L"，与请求的 " + requested +
+                      L" 不一致；镜像通常只保留最新补丁，已按 " + installed + L" 安装");
+    return true;
 }
 

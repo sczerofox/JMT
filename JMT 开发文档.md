@@ -18,6 +18,7 @@
 8. [异常处理与退出码](#8-异常处理与退出码)
 9. [构建、测试与发布](#9-构建测试与发布)
 10. [附录](#10-附录)
+11. [架构骨架（阶段 0）现状与后续阶段](#11-架构骨架阶段-0现状与后续阶段)
 
 ---
 
@@ -398,10 +399,15 @@ JdkDownloadService::ProbeResult probeUrl(const std::wstring& url, bool wantZip);
 | 版本 | 情况 |
 |------|------|
 | 8 / 11 / 16+ | Adoptium 镜像有 ZIP → 自动安装 |
-| 12 ~ 26 | 即使 Adoptium 没有，华为云 GA 也有 ZIP（初始 GA 包） |
-| 8 | 另有 EXE → ZIP 失败时手动安装 |
-| 9 / 10 | 两头都没有 → 进入网络请求前直接报错 |
+| 12 ~ 26 | 即使 Adoptium 没有（12~15），华为云 GA 也有 ZIP（初始 GA 包） |
+| 8 | 另有旧库 EXE → ZIP 失败时下载安装程序手动安装 |
 | 6 / 7 / 9 / 10 | 无 ZIP（Adoptium 未发布、华为云 GA 也没有），但有旧库 EXE → 下载后手动安装 |
+| 27+ | 无任何来源 → 进入网络请求前直接报错 |
+
+**补丁版本核对**（`warnIfPatchDiffers`）：请求了完整版本（如 `17.0.2`）时，用 `<jdk>\release` 读出的实际版本与请求比对；
+**不一致只提示不拒绝**——镜像每个大版本通常只保留最新补丁，若判为失败则请求 `17.0.2` 时所有源都会失败、根本装不上。
+（此前该函数叫 `versionSatisfied` 且「不一致则删除并放弃该源」；调用处传的还是主版本号，
+而 `isFullVersionQuery("17")` 恒为 false，导致这段校验从未真正执行——重构时一并修正。）
 
 **安装路径**：`GetInstallRoot()`——从 `D:` 依次到 `Z:` 尝试 `Program Files\Java`，返回第一个已存在或创建成功的目录，全部失败则落地 `C:\Program Files\Java`；目标目录为 `<root>\jdk-<主版本>`。若目标目录已是合法 JDK 则直接返回，不重复下载。
 
@@ -541,7 +547,7 @@ main（需要管理员）→ DownloadCommand::execute
        2) officialDownloadInfo → 权威文件名 + 官方直链
        3) buildDownloadPlan → zipSteps（南大、清华、华为云 GA）+ manualSteps
        4) 逐个 zipStep：probeUrl 探测（Content-Type + PK 魔数）→ downloadFile
-                        → extractZip → 校验/修复嵌套 → versionSatisfied
+                        → extractZip → 校验/修复嵌套 → warnIfPatchDiffers（完整版本时提示补丁差异）
        5) 官方直链作为最后一个 ZIP 候选兜底
        6) ZIP 全失败 → tryManualStep 下载安装包 → 返回 EXE_DOWNLOADED（提示手动安装）
   → scanJdks(true) 强制重扫 → setCurrentJdk(新版本)
@@ -745,7 +751,7 @@ build/jmt_tests.exe --suite path_utils
 | # | 位置 | 现象 | 影响 |
 |---|------|------|------|
 | 1 | `src/command/search_command.cpp` 等 | `restoreOracleJavaPath` 依赖真实目录 `C:\Program Files\Common Files\Oracle\Java\javapath` 是否存在 | 单测无法覆盖「恢复 javapath」分支（该目录不存在时是空操作），目前只验证 JDK 条目语义，javapath 往返留在手测清单 |
-| 2 | `src/jdk/jdk_download_service.cpp` | 官方端点只有 `latest/{feature}`，没有按补丁版本选择 | `download 17.0.9` 实际拿到的是 17 系列最新版；靠 `versionSatisfied` 校验后放弃该源，精确补丁版本需等 Adoptium 的 `/v3/binary/version/{release}` 分支接入 |
+| 2 | `src/jdk/jdk_download_service.cpp` | 官方端点只有 `latest/{feature}`，没有按补丁版本选择 | `download 17.0.9` 实际拿到的是 17 系列最新版；`warnIfPatchDiffers` 会提示实际装出的补丁与请求不一致（只提示不拒绝，否则该请求在所有源上都装不上）；精确补丁版本需等 Adoptium 的 `/v3/binary/version/{release}` 分支接入 |
 | 3 | `src/jdk/download_sources.cpp` | 镜像列表是编译期常量 | 想换镜像/调优先级要改代码重新编译；镜像站目录改版（如大小写变化）会让该站 404 并自动回退到下一个 |
 | 4 | `src/command/help_command.cpp` | `help <未知命令>` 打印错误后仍 `return ExitCode::Ok` | 脚本无法通过退出码判断帮助参数是否有效 |
 | 5 | `src/app/elevation_gate.cpp` | 提权提示语在骨架阶段统一为「需要管理员权限，正在请求提权...」 | 仅提示文案差异（原先 main 用的是「此操作需要管理员权限，正在请求...」），行为与退出码不变 |
@@ -844,7 +850,7 @@ build/jmt_tests.exe --suite path_utils
 | version/2 | `extractVersion` 返回完整版本；缓存写入 `#jmt-cache-v2` 头，旧格式判为无效并要求重扫；扫描去重从「按版本」改为「按路径」（同版本多份都保留） |
 | version/3 | `getCurrentVersion` 支持注入 `VersionResolver`（默认读 `release`），用户 PATH 优先，解析失败回退路径文本 |
 | version/4 | `use` 支持完整版本/主版本/前缀/别名并新增 `--exact`，命中多条取最高并打印候选；`remove` 放宽版本参数、按真实版本比较取最大、缓存按路径剔除；`search` 最大版本改用 `JavaVersion`；`list` 按版本倒序 |
-| version/5 | `download` 保留完整版本（安装目录 `jdk-17.0.2`）、`filterUrlsForVersion` 按版本筛源、`versionSatisfied` 安装后校验（不一致则删除并放弃该源） |
+| version/5 | `download` 保留完整版本、`filterUrlsForVersion` 按版本筛源、`versionSatisfied` 安装后校验（不一致则删除并放弃该源）<br>注：安装目录当时记为 `jdk-17.0.2`，实际实现一直是按主版本命名 `<root>\jdk-17`；`versionSatisfied` 在 download/13 重构中改名为 `warnIfPatchDiffers` 并改为「只提示不拒绝」 |
 | version/6 | `CommandBase::preflight` 钩子：提权前做只读校验，版本不存在时直接返回 2 而不弹 UAC |
 | version/7 | 修复缓存读取被独占文件锁拒绝导致缓存永远失效、每次全盘扫描的问题 |
 
@@ -860,15 +866,20 @@ build/jmt_tests.exe --suite path_utils
 | download/6 | 进度显示修正：① 去掉 curl 的 `-s`（silent 会把进度条一起关掉，导致 211MB 下载全程只显示「正在连接/下载」）；② 修复重复打印（同一心跳既走 `progress` 又走 `line`，且前者无换行造成粘连），现在每次只输出一条；③ 进度行统一带「已下载 X MB + 已用时 N 秒」，有百分比时每 10 秒或每 25% 打一行普通输出，无百分比时每 5 秒一行；④ 新增 `downloadedSizeOf()` 直接读取目标文件大小作为「已下载」来源；⑤ `parseStatsFromTail()` 从输出最后一行读 `-w` 统计（此前从头读会读到进度条里的数字，导致「下载完成: 0 KB」）；⑥ 修复 `ExtractVersionFromUrl` 把 URL 里的 IP（`http://127.0.0.1/...`）当成版本号的 bug，改为先匹配 `jdk/openjdk` 后的版本串、再回退到 `/17/` 这种独立路径段 |
 | download/7 | 进度显示去重：`IOutput` 新增 `supportsProgress()`（真实控制台 true / 重定向 false），服务层据此二选一——控制台只走原地刷新行，重定向才补进度行，避免控制台上出现「刷新行 + 进度行」粘在同一行的重复输出（当时补的是带 `[INFO]` 前缀的行，该前缀后来已整体移除） |
 | download/8 | 交互式选源与打印优化：`download_plan` 新增 `sourceDisplayName()`（主机名 → 华为云/南京大学/清华 TUNA/中科大/阿里云/Adoptium 官方/本地文件，未知主机回退主机名）与 `sourceKey()`（按主机分组，官方源单列）；`JdkDownloadService` 新增 `listSources(version, mode, installerOnly)` 与 `preferredSource` 参数（`executePlan` 把所选源排到最前，其余仍作后备）；`download` 命令打印「目标版本 / 查找到可用源 N（候选链接 M 条）/ 编号列表 / 提示选择」，支持 `--source N`、回车默认第 1 个、非交互环境自动按顺序 |
-| download/13 | **源方案重构（当前形态）**：删掉内置映射表、`.repo` 外部源文件与 `AppPaths::repoDir`，删除 `download_plan.*`（`DownloadMode` / `DownloadStepKind::MirrorExe` / `isDemoUrl` / `filterUrlsForVersion` / `sourceKey` / `sourceDisplayName`）；`officialDownloadInfo` 改走 `assets/latest` JSON 接口直接取权威文件名与官方直链（不再手工解析 307 重定向——旧实现还会漏掉查询串里的文件名）；新增 `jdk/download_sources.*`：`kMirrors`（南京大学 → 清华 TUNA → 华为云，实测延迟排序，中科大因未收录 Adoptium 被剔除）与 `buildDownloadPlan`，链接 = `<镜像>/<主版本>/jdk/x64/windows/<文件名>`（主版本由 `majorVersionFromFileName` 从文件名解析，解析不出就放弃拼链接）；`executePlan` 逐条尝试 + 官方直链兜底；删除交互式选源与 `--source` / `--mirror` / `java`，`downloadCommand` 只保留 `exe`；`exe` 模式缺 MSI 时自动回退到 ZIP 安装。端到端实测：`jmt download 21` 走南京大学镜像 11.6 MB/s，195.6 MB / 17 秒完成安装 |
+| download/13 | **源方案重构（第一阶段）**：删掉内置映射表、`.repo` 外部源文件与 `AppPaths::repoDir`，删除 `download_plan.*`（`DownloadMode` / `DownloadStepKind::MirrorExe` / `isDemoUrl` / `filterUrlsForVersion` / `sourceKey` / `sourceDisplayName`）；`officialDownloadInfo` 改走 `assets/latest` JSON 接口直接取权威文件名与官方直链（不再手工解析 307 重定向——旧实现还会漏掉查询串里的文件名）；新增 `jdk/download_sources.*`，链接 = `<镜像>/<主版本>/jdk/x64/windows/<文件名>`（主版本由 `majorVersionFromFileName` 从文件名解析，解析不出就放弃拼链接）。注：此阶段的源清单叫 `kMirrors`、只有南大/清华/华为云 Adoptium 三站，且当时删掉了交互式选源与 `exe`——已在 download/14 修正 |
+| download/14 | **按实测数据重做源与选源**：源清单改为分类型的 `kSources`（`Adoptium` / `HuaweiGa` / `HuaweiLegacyExe`），**按源分别判断覆盖面**（修掉此前用单个 `zipOk` 同时控制两种源、会给华为云 GA 拼出未收录版本链接的缺陷）；补回华为云旧库 EXE 覆盖 **6/7/8/9/10**（实测 6u45 60MB、7u80 147MB、8u202 222MB、9.0.1、10.0.2 均 200 且魔数为 `MZ`；此前误判为「6/7 无来源」而删掉了这些链接）；`buildDownloadPlan` 按主机归并成 `DownloadSource`（含 `isOfficial` 标记），`chooseSource` **恢复交互式选源**（列出可用源、标注「可自动安装 / 需手动安装」、回车取第 1 个、非交互环境按顺序全试）；取消 `exe` 开关，改为「ZIP 优先自动安装 / 只有安装包时下载后提示手动安装」；下载与安装包两条链路统一走 `probeUrl` 探测。实测：`jmt download 11` 走南大镜像 190.2MB / 14.9MB/s 自动装好；`download 6` 下载 60MB EXE 并提示手动安装 |
+| download/15 | **下载前探测**（`probeUrl`）：对每个候选发 `curl -r 0-3`，用「Content-Type 不含 html」+「魔数 `PK`(ZIP) / `MZ`(安装包)」判真假——中科大那类「HTTP 200 + 浏览器校验页」只看状态码必然误判，会白下 100+MB。同时修正补丁版本核对：`versionSatisfied` 改名为 `warnIfPatchDiffers` 并改为**只提示不拒绝**（调用处原先传的是主版本号，而 `isFullVersionQuery("17")` 恒为 false，这段校验从未真正执行过） |
+| download/16 | **v2.0 发布**：版本号单一来源升级（`kVersion` → v2.0，新增 `kVersionNumber` 供 User-Agent 拼接，消除 `jmt_download_service.cpp` 里写死的 `JMT/1.7`）；命令层精简为 9 个（移除 `data` / `shell`）；输出去掉 `[INFO]` 等文字前缀；`/W4` 严格构建零警告（清理死代码 `ExtractFileNameFromUrl`、死枚举 `ProbeResult::TooSmall`、11 处冗余 include，修复 `java_version.cpp` 三处「临时量绑非 const 引用」的 MSVC 私有扩展） |
 
-> `download/8` 里的 `listSources` / `SourceOption` / `--source` / `sourceDisplayName` 等已在 `download/13` 中移除，此处保留为当时的提交记录。
+> `download/8` 里的 `listSources` / `SourceOption` / `--source` / `sourceDisplayName` 等已在 `download/13` 中移除；
+> 其中**交互式选源**在 `download/14` 以新形态恢复（源来自 `DownloadPlan::sources`，而非旧的内置映射列表）。
+> 此处保留为当时的提交记录。
 
 **尚未完成**（原阶段 3 计划的其余部分，留待下一批）：
 
 1. `IDownloadEngine` 端口 + `CurlEngine` / `MultiThreadEngine` 统一抽象（当前仍按函数分支，但已全部经由节流器）
-2. 统一安装管线 `installFromSource`：消除 `tryZipStep` / `tryMsiStep` / `tryOfficialZip` 几份重复（下载→校验→解压→嵌套修复→版本校验）
-3. 校验增强：魔数与最小尺寸校验统一到两个引擎、可选 SHA-256（官方源 `.sha256`）、解压前 zip-slip 防护
+2. 统一安装管线 `installFromSource`：消除 `tryZipStep` / `tryManualStep` 两份重复（下载→校验→解压→嵌套修复→补丁核对）
+3. 校验增强：魔数与最小尺寸校验统一到两个引擎、可选 SHA-256（`assets` API 已返回 `checksum`，尚未使用）、解压前 zip-slip 防护
 4. 失败源**持久化**拉黑（当前仅进程内 10 分钟）
 5. 官方源精确补丁版本（`/v3/binary/version/{release_name}`）
 6. `Result<InstallOutcome>` 取代 `L"EXE_DOWNLOADED"` 哨兵；`.part` 复用（同会话断点续传）
