@@ -1,6 +1,5 @@
 #include "system/path_utils.hpp"
 #include <algorithm>
-#include <cctype>
 
 std::wstring PathUtils::normalize(const std::wstring& path) {
     std::wstring res = path;

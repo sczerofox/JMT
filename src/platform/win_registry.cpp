@@ -6,7 +6,7 @@
 namespace {
 
 // 调试日志：走 Win32 调试通道（仅 Debug 构建输出），避免适配器依赖应用的输出端口
-void debugLog(const std::wstring& message) {
+void debugLog([[maybe_unused]] const std::wstring& message) {
 #ifdef _DEBUG
     OutputDebugStringW((L"[DEBUG] " + message + L"\n").c_str());
 #endif

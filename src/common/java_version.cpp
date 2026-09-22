@@ -37,7 +37,7 @@ std::wstring stripJdkPrefix(const std::wstring& input) {
     return input;
 }
 
-// 8u202 这类旧别名
+// 8u202 这类旧别名（解析成功时回填 feature/update）
 bool parseUpdateAlias(const std::wstring& text, JavaVersion& version) {
     const std::wregex pattern(L"^(\\d+)[uU](\\d+)$");
     std::wsmatch match;
@@ -49,7 +49,8 @@ bool parseUpdateAlias(const std::wstring& text, JavaVersion& version) {
 
 // 查询串指定了几段：1=只看主版本，2=加 interim，3=加 update，4=加 patch
 int specifiedDepth(const std::wstring& query) {
-    if (parseUpdateAlias(query, JavaVersion{})) return 2;
+    JavaVersion alias;   // 只是用来判断「是不是 8u202 这类别名」，用完即弃
+    if (parseUpdateAlias(query, alias)) return 2;
     int dots = 0;
     bool hasUnderscoreUpdate = false;
     for (wchar_t ch : query) {
@@ -106,7 +107,8 @@ int JavaVersion::compare(const JavaVersion& other) const {
 bool JavaVersion::isFullVersionQuery(const std::wstring& query) {
     const std::wstring text = stripJdkPrefix(trimmed(query));
     if (text.empty()) return false;
-    if (parseUpdateAlias(text, JavaVersion{})) return true;   // 8u202
+    JavaVersion alias;
+    if (parseUpdateAlias(text, alias)) return true;          // 8u202
     return text.find(L'.') != std::wstring::npos;            // 17.0.2 / 1.8.0_202
 }
 
@@ -120,7 +122,8 @@ bool JavaVersion::matches(const std::wstring& query) const {
     if (queryVersion.feature != feature) return false;
 
     // 8u202 这类别名必须连 update 一起比，不能只比主版本
-    if (parseUpdateAlias(text, JavaVersion{})) {
+    JavaVersion alias;
+    if (parseUpdateAlias(text, alias)) {
         return queryVersion.update == update;
     }
 

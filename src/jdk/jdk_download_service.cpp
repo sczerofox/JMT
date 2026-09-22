@@ -18,21 +18,16 @@
 #include "system/utils.hpp"
 #include "network/multi_thread_downloader.hpp"
 #include <wininet.h>
-#include <memory>
 #include <vector>
-#include <map>
 #include <string>
 #include <iostream>
 #include <filesystem>
 #include <algorithm>
-#include <cstdlib>
 
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "winhttp.lib")
 
 namespace fs = std::filesystem;
-
-
 
 // ---------- 辅助函数：获取 .temp 目录（路径来自 AppPaths） ----------
 std::wstring JdkDownloadService::tempDirectory() {
@@ -40,18 +35,6 @@ std::wstring JdkDownloadService::tempDirectory() {
         CreateDirectoryW(paths_.tempDir.c_str(), nullptr);
     }
     return paths_.tempDir;
-}
-
-// 从 URL 提取文件名（去掉查询参数）
-static std::wstring ExtractFileNameFromUrl(const std::wstring& url) {
-    size_t pos = url.find_last_of(L'/');
-    if (pos == std::wstring::npos) return L"";
-    std::wstring fileName = url.substr(pos + 1);
-    size_t qpos = fileName.find(L'?');
-    if (qpos != std::wstring::npos) {
-        fileName = fileName.substr(0, qpos);
-    }
-    return fileName;
 }
 
 // 修复嵌套目录：若 targetDir 下只有一个子目录且该子目录是有效的 JDK，则将其内容上移并删除空目录
@@ -719,7 +702,7 @@ std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version)
     }
 
     // 列出可用源，让用户在交互式终端里选择（回车默认第 1 个）
-    const int preferred = chooseSource(plan, majorVersion);
+    const int preferred = chooseSource(plan);
 
     const std::wstring root = GetInstallRoot();
     const std::wstring targetDir = JoinPath(root, L"jdk-" + majorVersion);
@@ -758,13 +741,13 @@ std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version)
             out_.line(OutputLevel::Info, L"下载链接：" + step.url);
 
             if (step.kind == DownloadStepKind::Zip) {
-                if (tryZipStep(step, majorVersion, targetDir) && versionSatisfied(targetDir, majorVersion)) {
+                if (tryZipStep(step, targetDir) && versionSatisfied(targetDir, majorVersion)) {
                     return targetDir;
                 }
             } else {
                 triedAnyExe = true;
                 std::wstring downloaded;
-                if (tryManualStep(step, majorVersion, downloaded)) {
+                if (tryManualStep(step, downloaded)) {
                     out_.line(OutputLevel::Warning, L"提示：请手动运行此安装程序安装 JDK " +
                                                     majorVersion + L"，然后运行 'jmt search' 刷新缓存");
                     out_.line(OutputLevel::Info, L"建议安装路径: " + targetDir);
@@ -785,7 +768,7 @@ std::wstring JdkDownloadService::downloadAndInstall(const std::wstring& version)
 
 // 列出可用源并让用户选择。
 // 返回 1 起的源编号；回车（空输入）= 1；非交互环境返回 0 表示按顺序自动尝试全部。
-int JdkDownloadService::chooseSource(const DownloadPlan& plan, const std::wstring& version) {
+int JdkDownloadService::chooseSource(const DownloadPlan& plan) {
     if (plan.sources.empty()) {
         return 0;
     }
@@ -854,16 +837,14 @@ int JdkDownloadService::chooseSource(const DownloadPlan& plan, const std::wstrin
     return 0;
 }
 
-bool JdkDownloadService::tryZipStep(const DownloadStep& step, const std::wstring& version,
-                                    const std::wstring& targetDir) {
+bool JdkDownloadService::tryZipStep(const DownloadStep& step, const std::wstring& targetDir) {
     // 先探测：避免在「HTTP 200 + text/html 假页面」上白下 100+MB
     const ProbeResult probe = probeUrl(step.url, true);
     if (probe != ProbeResult::Zip) {
         const wchar_t* reason = L"未知原因";
         switch (probe) {
-            case ProbeResult::Html:     reason = L"返回的是网页而不是文件（镜像校验页或错误页）"; break;
-            case ProbeResult::Empty:    reason = L"请求失败或文件不存在"; break;
-            case ProbeResult::TooSmall: reason = L"文件过小"; break;
+            case ProbeResult::Html:      reason = L"返回的是网页而不是文件（镜像校验页或错误页）"; break;
+            case ProbeResult::Empty:     reason = L"请求失败或文件不存在"; break;
             case ProbeResult::Installer: reason = L"该地址是安装包而不是压缩包"; break;
             default: break;
         }
@@ -899,13 +880,15 @@ bool JdkDownloadService::tryZipStep(const DownloadStep& step, const std::wstring
 
     if (JdkScanService::isValidJdk(targetDir)) {
         const std::wstring installed = JdkScanService::extractVersion(targetDir);
-        out_.line(OutputLevel::Success, L"JDK " + (installed.empty() ? version : installed) + L" 安装成功");
+        out_.line(OutputLevel::Success,
+                  installed.empty() ? L"JDK 安装成功" : L"JDK " + installed + L" 安装成功");
         return true;
     }
     if (fixNestedJdkDirectory(targetDir) && JdkScanService::isValidJdk(targetDir)) {
         const std::wstring installed = JdkScanService::extractVersion(targetDir);
         out_.line(OutputLevel::Success,
-                  L"JDK " + (installed.empty() ? version : installed) + L" 安装成功（修复嵌套结构）");
+                  installed.empty() ? L"JDK 安装成功（修复嵌套结构）"
+                                    : L"JDK " + installed + L" 安装成功（修复嵌套结构）");
         return true;
     }
     out_.line(OutputLevel::Warning, L"  解压后不是有效的 JDK，换下一个源");
@@ -913,7 +896,7 @@ bool JdkDownloadService::tryZipStep(const DownloadStep& step, const std::wstring
     return false;
 }
 
-bool JdkDownloadService::tryManualStep(const DownloadStep& step, const std::wstring& version,
+bool JdkDownloadService::tryManualStep(const DownloadStep& step,
                                        std::wstring& outDownloadedPath) {
     const ProbeResult probe = probeUrl(step.url, false);
     if (probe != ProbeResult::Installer) {

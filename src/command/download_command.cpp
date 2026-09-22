@@ -6,14 +6,10 @@
 #include <windows.h>
 #include "platform/output.hpp"
 #include "system/utils.hpp"
-#include "app/elevation_gate.hpp"
-
 #include "common/java_version.hpp"
 #include "jdk/version_match.hpp"
-#include <regex>
 #include <filesystem>
 #include <conio.h>
-#include <iostream>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -48,7 +44,6 @@ static bool MoveToTrash(const std::wstring& jdkPath, const std::wstring& version
 }
 
 ExitCode DownloadCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
-    
     // ----- 参数检查 -----
     if (args.size() < 2) {
         ctx.out->line(OutputLevel::Error, L"请指定版本号，如 download 21");

@@ -22,7 +22,7 @@ public:
 
 private:
     // 探测结论
-    enum class ProbeResult { Empty, Html, Zip, Installer, TooSmall };
+    enum class ProbeResult { Empty, Html, Zip, Installer };
 
     const AppPaths& paths_;
     IOutput& out_;
@@ -57,14 +57,12 @@ private:
                               std::wstring& outDirectUrl);
 
     // 单个候选：探测 → 下载 → （ZIP）解压安装
-    bool tryZipStep(const DownloadStep& step, const std::wstring& version,
-                    const std::wstring& targetDir);
+    bool tryZipStep(const DownloadStep& step, const std::wstring& targetDir);
     // 单个安装包候选：探测 → 下载到 .temp
-    bool tryManualStep(const DownloadStep& step, const std::wstring& version,
-                       std::wstring& outDownloadedPath);
+    bool tryManualStep(const DownloadStep& step, std::wstring& outDownloadedPath);
 
     // 列出可用源并让用户选（返回 1 起的编号；回车取 1；非交互环境返回 0 = 按顺序全部尝试）
-    int chooseSource(const DownloadPlan& plan, const std::wstring& version);
+    int chooseSource(const DownloadPlan& plan);
     // 完整版本请求时校验安装结果与请求是否一致（不一致则删除并放弃该源）
     bool versionSatisfied(const std::wstring& targetDir, const std::wstring& requested);
 

@@ -9,10 +9,8 @@
 
 #include "jdk/version_match.hpp"
 #include <algorithm>
-#include <cctype>
 #include <conio.h>
 #include <filesystem>
-#include <regex>
 
 namespace fs = std::filesystem;
 

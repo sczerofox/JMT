@@ -19,8 +19,6 @@
 #include <vector>
 #include <memory>
 
-
-
 // 未处理的结构化异常（访问违规等）默认会让进程静默退出，这里统一打印诊断信息。
 // 只用最底层的 WriteConsoleW/WriteFile，避免在异常路径里再触发复杂逻辑。
 static LONG WINAPI JmtUnhandledExceptionFilter(EXCEPTION_POINTERS* info) {

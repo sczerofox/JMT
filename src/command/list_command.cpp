@@ -4,7 +4,8 @@
 #include "platform/output.hpp"
 #include "jdk/version_match.hpp"
 
-ExitCode ListCommand::execute(const std::vector<std::wstring>& args, AppContext& ctx) {
+ExitCode ListCommand::execute([[maybe_unused]] const std::vector<std::wstring>& args,
+                              AppContext& ctx) {
     auto jdks = ctx.scan->scanJdks(false, true);
     if (jdks.empty()) {
         ctx.out->line(OutputLevel::Warning, L"未找到任何 JDK，请运行 'search' 强制扫描");

@@ -1,6 +1,5 @@
 #include "common/string_helper.hpp"
 #include <algorithm>
-#include <cctype>
 
 std::vector<std::wstring> StringHelper::split(const std::wstring& str, wchar_t delim, bool keepEmpty) {
     std::vector<std::wstring> result;
