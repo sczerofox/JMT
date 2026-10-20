@@ -1,4 +1,4 @@
-# JMT（Java Manager Tool）开发文档 V2.1
+# JMT（Java Manager Tool）开发文档 V2.1.0
 
 > Windows 平台 JDK 版本管理工具 | C++17 | 纯 Win32 API | 无第三方依赖
 
@@ -286,7 +286,7 @@ ZIP 全不可用则下载安装包并让命令层提示手动安装。
 
 ### 3.9 version / help
 
-- `version`：输出 `include/common/version.hpp` 里的 `kAppName` / `kVersion` / `kBuildDate`（单一来源，REPL banner 复用同一组常量）；`kVersionNumber` 是无 `v` 前缀的纯版本号，供 User-Agent（`JMT/2.1`）这类需要拼接的场景使用
+- `version`：输出 `include/common/version.hpp` 里的 `kAppName` / `kVersion` / `kBuildDate`（单一来源，REPL banner 复用同一组常量）；`kVersionNumber` 是无 `v` 前缀的纯版本号，供 User-Agent（`JMT/2.1.0`）这类需要拼接的场景使用
 - `help`：无参数打印分组帮助；`help <命令>` 先 `registry_.findCommand` 取 `getHelp()`，再对 `search` / `download` / `remove` / `rollback` 追加子命令说明；未知命令提示错误但返回 `0`
 
 ---
@@ -865,7 +865,7 @@ build/jmt_tests.exe --suite path_utils
 | version/5 | `download` 保留完整版本、`filterUrlsForVersion` 按版本筛源、`versionSatisfied` 安装后校验（不一致则删除并放弃该源）<br>注：安装目录当时记为 `jdk-17.0.2`，实际实现一直是按主版本命名 `<root>\jdk-17`；`versionSatisfied` 在 download/13 重构中改名为 `warnIfPatchDiffers` 并改为「只提示不拒绝」 |
 | version/6 | `CommandBase::preflight` 钩子：提权前做只读校验，版本不存在时直接返回 2 而不弹 UAC |
 | version/7 | 修复缓存读取被独占文件锁拒绝导致缓存永远失效、每次全盘扫描的问题 |
-| scan/1 | **v2.1 JDK 判定重做**：新增 `JdkInfo` / `inspect()` 作为唯一判定入口——`release`（`JAVA_VERSION`）+ 工具三件套（`java/javac/jar`，PE `MZ`）+ JDK 9+ 的 `lib\modules` / `jmods\java.base.jmod` / `jvm.dll`（JDK 8 为 `lib\tools.jar` + `jvm.dll`）；排除 `jre` 与 IDE 自带 JBR（目录名 `jbr`/`jbrsdk` 或 `IMPLEMENTOR` 含 JetBrains）。`extractVersion` 以 `release` 为权威来源，缓存命中时重新判定并自愈（版本变化/条目失效立即重写）。`JavaVersion::parse` 支持四段版本 `17.0.20.1` 与 `25-ea` 后缀 |
+| scan/1 | **v2.1.0 JDK 判定重做**：新增 `JdkInfo` / `inspect()` 作为唯一判定入口——`release`（`JAVA_VERSION`）+ 工具三件套（`java/javac/jar`，PE `MZ`）+ JDK 9+ 的 `lib\modules` / `jmods\java.base.jmod` / `jvm.dll`（JDK 8 为 `lib\tools.jar` + `jvm.dll`）；排除 `jre` 与 IDE 自带 JBR（目录名 `jbr`/`jbrsdk` 或 `IMPLEMENTOR` 含 JetBrains）。`extractVersion` 以 `release` 为权威来源，缓存命中时重新判定并自愈（版本变化/条目失效立即重写）。`JavaVersion::parse` 支持四段版本 `17.0.20.1` 与 `25-ea` 后缀 |
 
 **范围说明**：`data output` / `data input` 两个命令已在本轮**整体移除**（连同 `DataCommand`、`.data` 运行期目录与 `AppPaths::dataDir` 字段）；需要迁移 JDK 列表时改用 `jmt list` 人工比对。
 
@@ -906,6 +906,6 @@ build/jmt_tests.exe --suite path_utils
 
 ---
 
-**文档版本**：V2.1（对应 `master` 分支：模块化重构 + 版本模型 + 下载子系统重构后的代码）
+**文档版本**：V2.1.0（对应 `master` 分支：模块化重构 + 版本模型 + 下载子系统重构后的代码）
 **最后更新**：2026-10-21
-**版本对应**：Java Manager Tool v2.1 (build 2026.10.21)
+**版本对应**：Java Manager Tool v2.1.0 (build 2026.10.21)

@@ -1,4 +1,4 @@
-# JMT – Java Manager Tool V2.1
+# JMT – Java Manager Tool V2.1.0
 
 **JMT** 是一款 Windows 平台纯命令行 JDK 版本管理工具（类似 NVM for Node.js）：全盘扫描本机 JDK、一键切换版本、镜像/官方多源下载安装、环境变量自动维护。
 
@@ -8,7 +8,7 @@
 - 交互式 REPL（无参运行 `jmt`）+ 单次命令双模式
 - 删除先进回收站（`.trash`），可用 `rollback` 还原
 
-当前版本：**Java Manager Tool v2.1 (build 2026.10.21)**（可通过 `jmt version` 查看）
+当前版本：**Java Manager Tool v2.1.0 (build 2026.10.21)**（可通过 `jmt version` 查看）
 
 ---
 
@@ -241,7 +241,7 @@ jmt rollback 17.0.9   # 恢复指定版本到原始路径
 
 ### `jmt version`
 
-输出 `Java Manager Tool v2.1 (build 2026.10.21)`。在交互模式下前面会有一个空行（由 REPL 统一添加，见「交互模式」）。
+输出 `Java Manager Tool v2.1.0 (build 2026.10.21)`。在交互模式下前面会有一个空行（由 REPL 统一添加，见「交互模式」）。
 
 ### `jmt help [命令]`
 
@@ -254,7 +254,7 @@ jmt rollback 17.0.9   # 恢复指定版本到原始路径
 不带任何参数运行 `jmt.exe` 进入 REPL：
 
 ```
-Java Manager Tool  v2.1  ( build  2026.10.21 )
+Java Manager Tool  v2.1.0  ( build  2026.10.21 )
 
 Usage:
 
@@ -284,7 +284,7 @@ jmt> list
 
 jmt> version
 
-Java Manager Tool v2.1 (build 2026.10.21)
+Java Manager Tool v2.1.0 (build 2026.10.21)
 
 jmt> exit
 ```
@@ -327,7 +327,7 @@ jmt> exit
 | 重试退避 | 1s → 2s → 4s（±30% 抖动） | 避免多实例同步重试 |
 | 请求预算 | 单 URL ≤6 次、单主机 ≤10 次、单次命令 ≤60 次 | 超预算立即停止，并在失败摘要里说明 |
 | 限速信号 | 429 / 503 / 403 → **拉黑该主机 10 分钟** | 到期自动恢复；被拉黑的主机在尝试列表中直接跳过，且不再降级到分片引擎 |
-| User-Agent | `JMT/2.1 (Windows; +https://github.com/sczerofox/JMT)` | 便于镜像方识别与放行 |
+| User-Agent | `JMT/2.1.0 (Windows; +https://github.com/sczerofox/JMT)` | 便于镜像方识别与放行 |
 
 其它：`.temp` 里的下载文件按 URL 哈希唯一命名（多源/多实例不互相覆盖）；**下载过程中按 Ctrl+C 可中断**（会终止 curl 子进程并清理半成品）。
 
