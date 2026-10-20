@@ -6,6 +6,7 @@
 //   raw 保持原样（17.0.9 / 22 / 1.8.0_202），匹配与比较用规范化后的字段。
 // 规范映射：
 //   17.0.9    -> feature=17 interim=0  update=9   patch=0
+//   17.0.20.1 -> feature=17 interim=0  update=20  patch=1   （Adoptium 的四段版本）
 //   22        -> feature=22
 //   1.8.0_202 -> feature=8  interim=0  update=202 patch=0   （1.x 旧格式）
 //   8u202     -> feature=8             update=202

@@ -16,7 +16,9 @@ ExitCode SearchCommand::execute(const std::vector<std::wstring>& args, AppContex
 
     auto jdks = ctx.scan->scanJdks(force);
     if (jdks.empty()) {
-        ctx.out->line(OutputLevel::Warning, L"未找到任何合法 JDK");
+        ctx.out->line(OutputLevel::Warning,
+                      L"未找到任何合法 JDK（IDE 自带的 JBR/JRE 不计入；完整 JDK 需含 release、"
+                      L"javac 与 jmods/tools.jar 开发镜像）");
         return ExitCode::NotFound;
     }
 

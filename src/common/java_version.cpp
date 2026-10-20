@@ -72,26 +72,31 @@ JavaVersion JavaVersion::parse(const std::wstring& raw) {
     if (text.empty()) return JavaVersion{raw};
     if (parseUpdateAlias(text, version)) return version;
 
+    // 支持 $FEATURE.$INTERIM.$UPDATE.$PATCH 四段（Adoptium 的 17.0.20.1 就带第四段），
+    // 也兼容 1.8.0_202 的下划线写法和 17.0.2+8 / 25-ea 这类构建后缀。
     static const std::wregex pattern(
-            L"^(\\d+)(?:\\.(\\d+))?(?:\\.(\\d+))?(?:_(\\d+))?(?:\\+([0-9A-Za-z._-]+))?$");
+            L"^(\\d+)(?:\\.(\\d+))?(?:\\.(\\d+))?(?:\\.(\\d+))?(?:_(\\d+))?(?:[+\\-]([0-9A-Za-z._-]+))?$");
     std::wsmatch match;
     if (!std::regex_match(text, match, pattern)) return JavaVersion{raw};
 
     const int first = std::stoi(match[1].str());
     const int second = match[2].matched ? std::stoi(match[2].str()) : 0;
     const int third = match[3].matched ? std::stoi(match[3].str()) : 0;
-    const int underscore = match[4].matched ? std::stoi(match[4].str()) : 0;
-    if (match[5].matched) version.build = match[5].str();
+    const int fourth = match[4].matched ? std::stoi(match[4].str()) : 0;
+    const int underscore = match[5].matched ? std::stoi(match[5].str()) : 0;
+    if (match[6].matched) version.build = match[6].str();
 
     if (first == 1) {
         // 1.8.0_202 → feature=8，interim/update 顺次映射
         version.feature = second;
         version.interim = third;
         version.update = underscore;
+        version.patch = fourth;
     } else {
         version.feature = first;
         version.interim = second;
         version.update = underscore != 0 ? underscore : third;
+        version.patch = fourth;
     }
     return version;
 }

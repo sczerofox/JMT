@@ -1,4 +1,4 @@
-# JMT（Java Manager Tool）开发文档 V2.0
+# JMT（Java Manager Tool）开发文档 V2.1
 
 > Windows 平台 JDK 版本管理工具 | C++17 | 纯 Win32 API | 无第三方依赖
 
@@ -31,7 +31,7 @@ JMT 是一款 Windows 平台命令行 JDK 版本管理工具（类似 NVM for No
 **核心特性**
 
 - 交互式 REPL（无参启动进入 `jmt>` 提示符）与单次命令模式
-- 固定磁盘全盘扫描，识别合法 JDK（校验 `bin\java.exe` + `bin\javac.exe` + `lib` 目录）
+- 固定磁盘全盘扫描，识别合法 JDK（`release` + `java/javac/jar` + `jmods`/`tools.jar` + `jvm.dll` 逐层校验，排除 `jre` / IDE 自带的 `jbr`）
 - 直接读写注册表中的系统 PATH（不使用 `JAVA_HOME`），修改后广播 `WM_SETTINGCHANGE`
 - 多源下载：Adoptium API 解析权威文件名 + 国内镜像按实测速度回退（南京大学 / 清华 TUNA / 华为云）+ 官方直链兜底，**不维护任何 URL 清单**
 - 下载引擎双通道：`curl.exe` 优先，失败回退 WinHTTP Range 多线程分片
@@ -286,7 +286,7 @@ ZIP 全不可用则下载安装包并让命令层提示手动安装。
 
 ### 3.9 version / help
 
-- `version`：输出 `include/common/version.hpp` 里的 `kAppName` / `kVersion` / `kBuildDate`（单一来源，REPL banner 复用同一组常量）；`kVersionNumber` 是无 `v` 前缀的纯版本号，供 User-Agent（`JMT/2.0`）这类需要拼接的场景使用
+- `version`：输出 `include/common/version.hpp` 里的 `kAppName` / `kVersion` / `kBuildDate`（单一来源，REPL banner 复用同一组常量）；`kVersionNumber` 是无 `v` 前缀的纯版本号，供 User-Agent（`JMT/2.1`）这类需要拼接的场景使用
 - `help`：无参数打印分组帮助；`help <命令>` 先 `registry_.findCommand` 取 `getHelp()`，再对 `search` / `download` / `remove` / `rollback` 追加子命令说明；未知命令提示错误但返回 `0`
 
 ---
@@ -296,30 +296,42 @@ ZIP 全不可用则下载安装包并让命令层提示手动安装。
 ### 4.1 JdkScanService — 扫描与缓存
 
 ```cpp
-static std::vector<std::pair<std::wstring, std::wstring>> scanJdks(
-        bool force, const std::wstring& cachePath, bool silent = false);
-static bool isValidJdk(const std::wstring& path);
-static std::wstring extractVersion(const std::wstring& path);
-static void writeCache(const std::vector<std::pair<std::wstring, std::wstring>>& jdks,
-                       const std::wstring& cachePath);
+struct JdkInfo {
+    bool valid;
+    std::wstring version;       // release 里的 JAVA_VERSION
+    std::wstring implementor;   // release 里的 IMPLEMENTOR
+    std::wstring reason;        // 判定失败原因（中文，可直接输出）
+};
+
+JdkInfo inspect(const std::wstring& path);              // 唯一判定入口
+bool isValidJdk(const std::wstring& path);              // == inspect(path).valid
+std::wstring extractVersion(const std::wstring& path);
 ```
 
-**合法性校验** `isValidJdk`：目录名为 `jre` 直接排除；必须同时存在 `bin\java.exe`、`bin\javac.exe` 和 `lib` 目录。
+**合法性校验** `inspect`（也是 `isValidJdk` 的实现），按顺序检查：
+
+1. 必须是目录；末级目录名不能是 `jre`，也不能是 IDE 私有运行时（目录名 `jbr` / `jbrsdk`，或 `release` 的 `IMPLEMENTOR` 含 `JetBrains`）
+2. `<path>\release` 必须存在，且有能解析的 `JAVA_VERSION` —— 这是 JDK/JRE 的“身份证”，也是版本的唯一权威来源
+3. `bin\java.exe`、`bin\javac.exe`、`bin\jar.exe` 必须存在、≥ 1 KB，且以 PE 头 `MZ` 开头（防止文本文件改名冒充）
+4. JDK 9+：还要有 `lib\modules`、`jmods\java.base.jmod`（JDK 才有的开发镜像）和 `bin\server\jvm.dll`
+5. JDK 6/7/8：还要有 `lib\tools.jar`（JDK 专属）和 `jre\bin\server\jvm.dll`（或 `bin\server\jvm.dll`）
+
+任何一步失败都返回 `valid == false` 和可读的 `reason`。**只看 `java.exe + javac.exe + lib` 不够**：IDE 自带的 JBR 同样满足，缺 `jmods` 的 JRE / jlink 运行时也可能带 `javac`；必须把 release、JMOD 开发镜像、PE 头和 JVM DLL 一起作为证据。
 
 **版本提取** `extractVersion`：
 
-1. 读 `<path>\release`，正则 `JAVA_VERSION="([^"]+)"` 并交给 `JavaVersion::parse`，**原样返回完整版本**（`17.0.9` / `22` / `1.8.0_202`）
+1. 读 `<path>\release` 的 `JAVA_VERSION`，交给 `JavaVersion::parse`，**原样返回完整版本**（`17.0.9` / `17.0.20.1` / `22` / `1.8.0_202`）
 2. 回退路径匹配 `(?:jdk|openjdk)[-_]?(\d+(?:[uU]\d+)?(?:\.\d+)*(?:_\d+)?)`，覆盖 `jdk-17.0.2` / `jdk1.8.0_202` / `jdk-8u202` / `jdk17` / `openjdk-11.0.2`
 3. 都解析不出有效版本时返回空串（该目录不会被收录）
 
-**重要**：目录名常常只有主版本（实测 `D:\Program Files\Java\jdk-17` 的 `release` 是 `JAVA_VERSION="17.0.9"`），所以版本必须以 `release` 为准，不能从目录名推断。
+**重要**：目录名常常只有主版本（实测 `D:\Program Files\Java\jdk-17` 的 `release` 是 `JAVA_VERSION="17.0.9"`），所以版本必须以 `release` 为准，不能从目录名推断。路径回退分支只用于没有文件系统访问的单测；真实扫描要求 `release` 存在。
 
 **扫描策略** `scanJdks`：
 
-- `force == false`：先 `FileLock` 独占缓存文件 → `ReadFileText` 逐行 `版本号|路径` → 逐条 `isValidJdk` 校验；无效条目被剔除，条目数与行数不一致时立即重写缓存并返回
+- `force == false`：读取缓存（不加锁；写侧由 `FileLock` 串行化，读到半成品时解析失败会回退重扫）→ 逐条重新 `inspect`：路径失效或不再是 JDK 的条目剔除，版本以 `release` 重新计算（原地升级也能自愈）；有变化立即重写缓存并返回
 - 否则全盘扫描：先扫常见目录（`C:\Program Files\Java`、`C:\Program Files (x86)\Java`、`C:\jdk`、`D:\Java`、`E:\Java`、`D:\jdk`），再遍历 `GetAvailableDrives()`（仅 `DRIVE_FIXED`）根目录，递归深度 3 层
 - 排除目录集合：`C:\Windows`、`C:\ProgramData`、`C:\System Volume Information`、`$Recycle.Bin`、`System Volume Information`、`Recovery`、`Temp`
-- 同版本去重（`std::set<std::wstring> seen`，先到先得），结束后 `writeCache`；`silent == false` 时逐条打印「找到 JDK: <路径>」
+- 按路径去重（`PathUtils::normalize`，同一版本装多份都保留）；找到合法 JDK 后不再向下递归；结束后 `writeCache`；`silent == false` 时逐条打印「找到 JDK: <路径>」
 
 **缓存写入** `writeCache`：`FileLock::tryLock()` 加锁后 `writeAllText`，内容是 `版本号|路径\n` 拼接（UTF-16 LE 原始宽字符、无 BOM）。读路径统一走 `system/utils.hpp` 的 `ReadFileText`，它按「UTF-16 BOM → UTF-16 启发式 → UTF-8 → ANSI」顺序解码，因此缓存与手改文件都能读。
 
@@ -514,11 +526,11 @@ bool download(const std::wstring& url, const std::wstring& destPath,
 ```
 main → 需要管理员 → SearchCommand::execute
   → JdkScanService::scanJdks(force, cache)
-      [缓存命中] FileLock → ReadFileText → 逐条 isValidJdk 校验（失效则重写缓存）
-      [否则]     常见目录 + 固定盘根目录递归 3 层 → 同版本去重 → writeCache
+      [缓存命中] ReadFileText → 逐条 inspect（版本按 release 重算，失效则重写缓存）
+      [否则]     常见目录 + 固定盘根目录递归 3 层 → 按路径去重 → writeCache
   → JavaEnvService::getCurrentVersion()
       [非空] 报告当前版本，不改环境变量
-      [空]   max_element(版本) → setCurrentJdk(路径, Auto)
+      [空]   maxVersion(已安装列表) → setCurrentJdk(路径, Auto)
                  ├─ 过滤所有 IsJdkBinPath 条目
                  ├─ removeOracleJavaPath
                  ├─ 追加 <path>\bin
@@ -853,6 +865,7 @@ build/jmt_tests.exe --suite path_utils
 | version/5 | `download` 保留完整版本、`filterUrlsForVersion` 按版本筛源、`versionSatisfied` 安装后校验（不一致则删除并放弃该源）<br>注：安装目录当时记为 `jdk-17.0.2`，实际实现一直是按主版本命名 `<root>\jdk-17`；`versionSatisfied` 在 download/13 重构中改名为 `warnIfPatchDiffers` 并改为「只提示不拒绝」 |
 | version/6 | `CommandBase::preflight` 钩子：提权前做只读校验，版本不存在时直接返回 2 而不弹 UAC |
 | version/7 | 修复缓存读取被独占文件锁拒绝导致缓存永远失效、每次全盘扫描的问题 |
+| scan/1 | **v2.1 JDK 判定重做**：新增 `JdkInfo` / `inspect()` 作为唯一判定入口——`release`（`JAVA_VERSION`）+ 工具三件套（`java/javac/jar`，PE `MZ`）+ JDK 9+ 的 `lib\modules` / `jmods\java.base.jmod` / `jvm.dll`（JDK 8 为 `lib\tools.jar` + `jvm.dll`）；排除 `jre` 与 IDE 自带 JBR（目录名 `jbr`/`jbrsdk` 或 `IMPLEMENTOR` 含 JetBrains）。`extractVersion` 以 `release` 为权威来源，缓存命中时重新判定并自愈（版本变化/条目失效立即重写）。`JavaVersion::parse` 支持四段版本 `17.0.20.1` 与 `25-ea` 后缀 |
 
 **范围说明**：`data output` / `data input` 两个命令已在本轮**整体移除**（连同 `DataCommand`、`.data` 运行期目录与 `AppPaths::dataDir` 字段）；需要迁移 JDK 列表时改用 `jmt list` 人工比对。
 
@@ -893,6 +906,6 @@ build/jmt_tests.exe --suite path_utils
 
 ---
 
-**文档版本**：V2.0（对应 `master` 分支：模块化重构 + 版本模型 + 下载子系统重构后的代码）
-**最后更新**：2026-09-23
-**版本对应**：Java Manager Tool v2.0 (build 2026.09.23)
+**文档版本**：V2.1（对应 `master` 分支：模块化重构 + 版本模型 + 下载子系统重构后的代码）
+**最后更新**：2026-10-21
+**版本对应**：Java Manager Tool v2.1 (build 2026.10.21)

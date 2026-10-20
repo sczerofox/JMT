@@ -1,4 +1,4 @@
-# JMT – Java Manager Tool V2.0
+# JMT – Java Manager Tool V2.1
 
 **JMT** 是一款 Windows 平台纯命令行 JDK 版本管理工具（类似 NVM for Node.js）：全盘扫描本机 JDK、一键切换版本、镜像/官方多源下载安装、环境变量自动维护。
 
@@ -8,7 +8,7 @@
 - 交互式 REPL（无参运行 `jmt`）+ 单次命令双模式
 - 删除先进回收站（`.trash`），可用 `rollback` 还原
 
-当前版本：**Java Manager Tool v2.0 (build 2026.09.23)**（可通过 `jmt version` 查看）
+当前版本：**Java Manager Tool v2.1 (build 2026.10.21)**（可通过 `jmt version` 查看）
 
 ---
 
@@ -81,8 +81,12 @@ jmt download 17
 
 - 扫描范围：`C:\Program Files\Java`、`C:\Program Files (x86)\Java`、`C:\jdk`、`D:\Java`、`E:\Java`、`D:\jdk` 等常见目录，以及所有固定磁盘根目录，递归深度 3 层
 - 排除目录：`C:\Windows`、`C:\ProgramData`、`C:\System Volume Information`、`$Recycle.Bin`、`System Volume Information`、`Recovery`、`Temp`
-- 合法 JDK 判定：存在 `bin\java.exe` + `bin\javac.exe` + `lib` 目录，且目录名不是 `jre`
-- 版本号来源：优先读 `release` 文件中的 `JAVA_VERSION`（`1.8.x` 归一化为 `8`），否则从路径名匹配 `jdk1.8` / `jdk-17` / `jdk17`
+- 合法 JDK 判定（逐层证据）：
+  1. 目录名不是 `jre`，也不是 IDE 私有运行时（`jbr` / `jbrsdk`，或 `release` 的 `IMPLEMENTOR` 含 `JetBrains`）
+  2. 必须有 `release` 文件且能解析出 `JAVA_VERSION`
+  3. `bin\java.exe`、`bin\javac.exe`、`bin\jar.exe` 都存在、≥ 1 KB，且文件头是 PE 的 `MZ`
+  4. JDK 9+ 还要有 `lib\modules`、`jmods\java.base.jmod`、`bin\server\jvm.dll`；JDK 6/7/8 还要有 `lib\tools.jar` 和 `jvm.dll`
+- 版本号来源：只以 `release` 里的 `JAVA_VERSION` 为准（`1.8.x` 保持原样显示），不再从目录名推断；缓存命中时也会重新读 `release` 校正版本、剔除已失效条目
 - 结果写缓存 `.jmt_cache`；`--force` 忽略缓存强制重扫
 
 ### `jmt list`
@@ -237,7 +241,7 @@ jmt rollback 17.0.9   # 恢复指定版本到原始路径
 
 ### `jmt version`
 
-输出 `Java Manager Tool v2.0 (build 2026.09.23)`。在交互模式下前面会有一个空行（由 REPL 统一添加，见「交互模式」）。
+输出 `Java Manager Tool v2.1 (build 2026.10.21)`。在交互模式下前面会有一个空行（由 REPL 统一添加，见「交互模式」）。
 
 ### `jmt help [命令]`
 
@@ -250,7 +254,7 @@ jmt rollback 17.0.9   # 恢复指定版本到原始路径
 不带任何参数运行 `jmt.exe` 进入 REPL：
 
 ```
-Java Manager Tool  v2.0  ( build  2026.09.23 )
+Java Manager Tool  v2.1  ( build  2026.10.21 )
 
 Usage:
 
@@ -280,7 +284,7 @@ jmt> list
 
 jmt> version
 
-Java Manager Tool v2.0 (build 2026.09.23)
+Java Manager Tool v2.1 (build 2026.10.21)
 
 jmt> exit
 ```
@@ -323,7 +327,7 @@ jmt> exit
 | 重试退避 | 1s → 2s → 4s（±30% 抖动） | 避免多实例同步重试 |
 | 请求预算 | 单 URL ≤6 次、单主机 ≤10 次、单次命令 ≤60 次 | 超预算立即停止，并在失败摘要里说明 |
 | 限速信号 | 429 / 503 / 403 → **拉黑该主机 10 分钟** | 到期自动恢复；被拉黑的主机在尝试列表中直接跳过，且不再降级到分片引擎 |
-| User-Agent | `JMT/2.0 (Windows; +https://github.com/sczerofox/JMT)` | 便于镜像方识别与放行 |
+| User-Agent | `JMT/2.1 (Windows; +https://github.com/sczerofox/JMT)` | 便于镜像方识别与放行 |
 
 其它：`.temp` 里的下载文件按 URL 哈希唯一命名（多源/多实例不互相覆盖）；**下载过程中按 Ctrl+C 可中断**（会终止 curl 子进程并清理半成品）。
 
@@ -401,6 +405,7 @@ JDK 11 安装成功
 3. **镜像只保留最新补丁**：南大 / 清华的 Adoptium 目录里每个大版本通常只有最新补丁（如 8 只有 8u504b01），历史补丁不在镜像中；`jmt download <完整版本>` 拿到的是该主版本最新版，装完后由 `warnIfPatchDiffers` **提示**实际版本与请求的差异（只提示不拒绝——若一律判失败，请求 17.0.2 时所有源都会失败、根本装不上）。
 4. **华为云 GA 只有初始包**：`mirrors.huaweicloud.com/openjdk/<主版本>/` 提供的是该大版本 GA 包（非最新补丁），且没有目录索引，无法枚举补丁版本；它只作为 Adoptium 未覆盖版本（12~15）的补充。
 5. **镜像列表是编译期常量**：更换镜像或调整优先级需要改 `src/jdk/download_sources.cpp` 的 `kSources` 并重新编译；镜像站改版（如路径大小写变化）会让该站探测失败并自动回退到下一个。
+6. **IDE 自带的 JetBrains Runtime 不作为 JDK 管理**：`jbr` / `jbrsdk` 目录、以及 `release` 里 `IMPLEMENTOR` 含 `JetBrains` 的运行时都会被 `search` / `list` 排除。它们是 IDE 的私有运行环境，会随 IDE 升级被替换，不适合写进 PATH 作为开发用 JDK。
 
 已修复（保留记录，避免回退）：
 
@@ -410,6 +415,7 @@ JDK 11 安装成功
 - **下载按「ZIP 优先、安装包兜底」自动决策**：不再需要 `exe` 开关；能下到 ZIP 就自动解压安装，只有安装包（EXE/MSI）时下载到 `.temp` 并提示手动安装。
 - **下载源不再需要维护清单**：`.repo` 外部源文件与内置映射表已整体移除，改由 Adoptium API 的文件名 + 各源布局实时拼链接（详见「下载源管理」）；`--source` / `--mirror` / `java` 开关已删除，改为**列出可用源供选择**（回车取第 1 个，非交互环境按顺序全试）并按优先级自动回退。
 - **下载前探测**：每个候选先取 4 字节验魔数，避免把镜像站的 HTML 校验页（HTTP 200）当成安装包白下 100+MB。
+- **JDK 判定不再只看 `java.exe + javac.exe + lib`**：改为 `release`（版本身份证）+ PE 头 + JDK 专属开发镜像（`jmods` / `tools.jar`）+ `jvm.dll` 的逐层校验；IDE 自带的 JetBrains Runtime（`jbr`）不再被 `search` / `list` 收录，也不会被自动写进 PATH。缓存条目在读取时重新校验，旧规则误收录的条目会自愈剔除。
 
 版本模型（当前阶段）新增：
 
@@ -463,7 +469,7 @@ build/jmt_tests.exe --list
 cmake -S . -B build -DJMT_BUILD_TESTS=OFF
 ```
 
-现有 4 组用例：`unit.string_helper`、`unit.path_utils`、`unit.version_parse`、`integration.cli_smoke`。约定：`tests/unit/` 用例不触碰注册表/PATH/网络；`tests/integration/` 只调用只读命令（`version`、`help`、未知命令）。`tests/` 已被 `.gitignore` 排除，仓库不发布测试代码；`CMakeLists.txt` 会先判断该目录是否存在，再决定是否注册测试目标。
+现有 15 组用例：`unit.string_helper`、`unit.path_utils`、`unit.version_parse`、`unit.jdk_scan`、`unit.java_version`、`unit.java_env_service`、`unit.version_match`、`unit.download_plan`、`unit.download_sources`、`unit.host_throttle`、`unit.curl_output`、`integration.cli_smoke`、`integration.cli_output`、`integration.registry_user_scope`、`integration.console_progress`。约定：`tests/unit/` 用例不触碰注册表/PATH/网络；`tests/integration/` 只调用只读命令（`version`、`help`、未知命令）。`tests/` 已被 `.gitignore` 排除，仓库不发布测试代码；`CMakeLists.txt` 会先判断该目录是否存在，再决定是否注册测试目标。
 
 ### 链接库
 
